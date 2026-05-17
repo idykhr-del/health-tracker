@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/types.ts","./src/data/exercises.ts","./src/hooks/useworkoutdata.ts","./src/pages/calendarscreen.tsx","./src/pages/graphscreen.tsx","./src/pages/recommendscreen.tsx","./src/pages/recordscreen.tsx","./src/pages/settingsscreen.tsx","./src/utils/idb.ts","./src/utils/storage.ts"],"version":"5.9.3"}
