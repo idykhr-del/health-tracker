@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Goals, AppSettings } from '../types'
+import type { Goals, AppSettings, WithingsSyncStatus } from '../types'
 import { exportBodyCSV, exportSleepCSV, downloadFile } from '../utils/export'
 import type { BodyRecord, SleepRecord } from '../types'
 
@@ -14,11 +14,26 @@ interface Props {
   onResetAll: () => void
   onClearHistory: () => void
   showToast: (msg: string, type?: 'success' | 'error' | 'info') => void
+  // Withings
+  withingsConnected: boolean
+  withingsSyncStatus: WithingsSyncStatus
+  withingsSyncError: string | null
+  withingsLastSync: string | null
+  onWithingsConnect: () => void
+  onWithingsDisconnect: () => void
+  onWithingsSyncNow: () => void
+  // workout-tracker
+  workoutSameOrigin: boolean
+  workoutSessionCount: number
+  workoutLastSync: string | null
 }
 
 export default function Settings({
   goals, settings, bodyRecords, sleepRecords,
   onUpdateGoals, onResetBody, onResetSleep, onResetAll, onClearHistory, showToast,
+  withingsConnected, withingsSyncStatus, withingsSyncError, withingsLastSync,
+  onWithingsConnect, onWithingsDisconnect, onWithingsSyncNow,
+  workoutSameOrigin, workoutSessionCount, workoutLastSync,
 }: Props) {
   const [editGoals, setEditGoals] = useState<Goals>({ ...goals })
   const [confirmReset, setConfirmReset] = useState<'body' | 'sleep' | 'all' | null>(null)
@@ -59,11 +74,126 @@ export default function Settings({
   const lastSleepDate = sleepRecords.length
     ? [...sleepRecords].sort((a, b) => b.date.localeCompare(a.date))[0].date : null
 
+  const syncBtnLabel =
+    withingsSyncStatus === 'syncing' ? '同期中...' :
+    withingsSyncStatus === 'success' ? '✓ 同期完了' : '今すぐ同期'
+
   return (
     <div className="overflow-y-auto h-full pb-6">
       <div className="px-4 pt-4 flex flex-col gap-5">
 
-        {/* Goal settings */}
+        {/* ── Withings連携 ────────────────────────────────────────────────── */}
+        <section>
+          <h2 className="text-sm font-semibold text-white mb-1">Withings 連携</h2>
+
+          {withingsConnected ? (
+            <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-accentGreen text-lg">✅</span>
+                <div>
+                  <p className="text-sm text-white font-medium">連携済み</p>
+                  {withingsLastSync && (
+                    <p className="text-xs text-muted">最終同期: {withingsLastSync}</p>
+                  )}
+                </div>
+              </div>
+
+              {withingsSyncError && (
+                <p className="text-xs text-red-400 bg-red-400/10 rounded-lg px-3 py-2">
+                  {withingsSyncError}
+                </p>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={onWithingsSyncNow}
+                  disabled={withingsSyncStatus === 'syncing'}
+                  className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors
+                    ${withingsSyncStatus === 'syncing'
+                      ? 'bg-border text-muted cursor-not-allowed'
+                      : withingsSyncStatus === 'success'
+                      ? 'bg-accentGreen/20 text-accentGreen border border-accentGreen/30'
+                      : 'bg-accent text-bg'}`}
+                >
+                  {syncBtnLabel}
+                </button>
+                <button
+                  onClick={() => {
+                    onWithingsDisconnect()
+                    showToast('Withings連携を解除しました')
+                  }}
+                  className="px-4 py-2.5 border border-red-400/40 rounded-xl text-sm text-red-400"
+                >
+                  解除
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-accentOrange text-lg">⚠️</span>
+                <div>
+                  <p className="text-sm text-white font-medium">未連携</p>
+                  <p className="text-xs text-muted">
+                    Withings Body SmartのデータをAPI経由で自動取得します。
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={onWithingsConnect}
+                className="w-full py-2.5 bg-accent text-bg rounded-xl font-semibold text-sm"
+              >
+                Withingsアカウントと連携する
+              </button>
+              <p className="text-xs text-muted">
+                ※ developer.withings.com で Client ID / Secret を取得し、
+                Vercel 環境変数に設定してください。
+              </p>
+            </div>
+          )}
+        </section>
+
+        {/* ── workout-tracker 連携 ─────────────────────────────────────────── */}
+        <section>
+          <h2 className="text-sm font-semibold text-white mb-1">workout-tracker 連携</h2>
+          <div className="bg-card rounded-xl p-4 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              {workoutSessionCount > 0 ? (
+                <span className="text-accentGreen">✅</span>
+              ) : (
+                <span className="text-muted">○</span>
+              )}
+              <div>
+                <p className="text-sm text-white font-medium">
+                  {workoutSameOrigin ? '自動連携中（同一ドメイン）' : 'ファイルインポート'}
+                </p>
+                <p className="text-xs text-muted">
+                  {workoutSessionCount > 0
+                    ? `最終読み込み: アプリ起動時（${workoutSessionCount}件）${workoutLastSync ? ' / 最終: ' + workoutLastSync : ''}`
+                    : 'データなし'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ── AutoSleep連携状態 ────────────────────────────────────────────── */}
+        <section>
+          <h2 className="text-sm font-semibold text-white mb-1">AutoSleep 連携</h2>
+          <div className="bg-card rounded-xl p-4">
+            <div className="flex items-center gap-2">
+              <span className="text-accentPurple">📥</span>
+              <div>
+                <p className="text-sm text-white font-medium">CSVインポート（方法A/B/C）</p>
+                <p className="text-xs text-muted">
+                  {lastSleepDate ? `最終インポート: ${lastSleepDate}（${sleepRecords.length}件）` : 'インポートなし'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ── 目標値設定 ───────────────────────────────────────────────────── */}
         <section>
           <h2 className="text-sm font-semibold text-white mb-3">目標値設定</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-4">
@@ -101,13 +231,13 @@ export default function Settings({
           </div>
         </section>
 
-        {/* Data sync status */}
+        {/* ── 連携状態サマリー ─────────────────────────────────────────────── */}
         <section>
-          <h2 className="text-xs text-muted uppercase tracking-wider mb-2">連携状態サマリー</h2>
+          <h2 className="text-xs text-muted uppercase tracking-wider mb-2">データ件数サマリー</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
             {[
-              { label: 'Withings CSVインポート', date: lastBodyDate, count: bodyRecords.length, color: 'accent' },
-              { label: 'AutoSleepインポート',    date: lastSleepDate, count: sleepRecords.length, color: 'accentPurple' },
+              { label: 'Withings 体組成', date: lastBodyDate,  count: bodyRecords.length,  color: 'accent' },
+              { label: 'AutoSleep 睡眠',  date: lastSleepDate, count: sleepRecords.length, color: 'accentPurple' },
             ].map(({ label, date, count, color }) => (
               <div key={label} className="flex justify-between items-center">
                 <div>
@@ -120,7 +250,7 @@ export default function Settings({
           </div>
         </section>
 
-        {/* Export */}
+        {/* ── データエクスポート ──────────────────────────────────────────── */}
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">データエクスポート</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-2">
@@ -130,7 +260,7 @@ export default function Settings({
           </div>
         </section>
 
-        {/* Import history reset */}
+        {/* ── インポート履歴 ────────────────────────────────────────────────── */}
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">インポート履歴</h2>
           <div className="bg-card rounded-xl p-4">
@@ -144,33 +274,17 @@ export default function Settings({
           </div>
         </section>
 
-        {/* Data reset */}
+        {/* ── データリセット ────────────────────────────────────────────────── */}
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">データリセット</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-2">
-            <button
-              onClick={() => setConfirmReset('body')}
-              className="py-2.5 border border-red-400/30 rounded-xl text-sm text-red-400"
-            >
-              体組成データをリセット
-            </button>
-            <button
-              onClick={() => setConfirmReset('sleep')}
-              className="py-2.5 border border-red-400/30 rounded-xl text-sm text-red-400"
-            >
-              睡眠データをリセット
-            </button>
-            <button
-              onClick={() => setConfirmReset('all')}
-              className="py-2.5 bg-red-500/10 border border-red-500 rounded-xl text-sm text-red-400 font-semibold"
-            >
-              すべてのデータをリセット
-            </button>
+            <button onClick={() => setConfirmReset('body')}  className="py-2.5 border border-red-400/30 rounded-xl text-sm text-red-400">体組成データをリセット</button>
+            <button onClick={() => setConfirmReset('sleep')} className="py-2.5 border border-red-400/30 rounded-xl text-sm text-red-400">睡眠データをリセット</button>
+            <button onClick={() => setConfirmReset('all')}   className="py-2.5 bg-red-500/10 border border-red-500 rounded-xl text-sm text-red-400 font-semibold">すべてのデータをリセット</button>
           </div>
         </section>
 
-        {/* App version */}
-        <p className="text-center text-xs text-muted">統合ヘルストラッカー v0.0.1</p>
+        <p className="text-center text-xs text-muted">統合ヘルストラッカー v0.0.2</p>
 
       </div>
 
@@ -186,12 +300,8 @@ export default function Settings({
                 ? '体組成データをすべて削除します。この操作は取り消せません。'
                 : '睡眠データをすべて削除します。この操作は取り消せません。'}
             </p>
-            <button onClick={executeReset} className="py-3 bg-red-500 text-white rounded-xl font-semibold">
-              削除する
-            </button>
-            <button onClick={() => setConfirmReset(null)} className="py-3 text-muted text-sm">
-              キャンセル
-            </button>
+            <button onClick={executeReset} className="py-3 bg-red-500 text-white rounded-xl font-semibold">削除する</button>
+            <button onClick={() => setConfirmReset(null)} className="py-3 text-muted text-sm">キャンセル</button>
           </div>
         </div>
       )}

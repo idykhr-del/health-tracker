@@ -1,4 +1,4 @@
-import type { BodyData, WorkoutSession } from '../types'
+import type { BodyData, WorkoutSession, WithingsSyncStatus } from '../types'
 import { calcWeeklyChange } from '../utils/analytics'
 import SummaryCard from '../components/ui/SummaryCard'
 import ProgressBar from '../components/ui/ProgressBar'
@@ -8,6 +8,9 @@ interface Props {
   data: BodyData
   sessions: WorkoutSession[]
   onNavigateToData: () => void
+  withingsSyncStatus: WithingsSyncStatus
+  withingsLastSync: string | null
+  onWithingsSyncNow: () => void
 }
 
 function addDays(dateStr: string, n: number): string {
@@ -22,7 +25,7 @@ function formatMinutes(min: number): string {
   return h > 0 ? `${h}h${m > 0 ? m + 'm' : ''}` : `${m}m`
 }
 
-export default function Dashboard({ data, sessions, onNavigateToData }: Props) {
+export default function Dashboard({ data, sessions, onNavigateToData, withingsSyncStatus, withingsLastSync, onWithingsSyncNow }: Props) {
   const { bodyRecords, sleepRecords, goals } = data
   const hasAnyData = bodyRecords.length > 0 || sleepRecords.length > 0 || sessions.length > 0
 
@@ -71,6 +74,23 @@ export default function Dashboard({ data, sessions, onNavigateToData }: Props) {
   return (
     <div className="overflow-y-auto h-full pb-6">
       <div className="px-4 pt-4 flex flex-col gap-5">
+
+        {/* Withings sync status bar */}
+        {withingsSyncStatus !== 'idle' && (
+          <div className={`flex items-center justify-between rounded-xl px-4 py-2 text-xs
+            ${withingsSyncStatus === 'syncing'  ? 'bg-accent/10 text-accent' :
+              withingsSyncStatus === 'success'  ? 'bg-accentGreen/10 text-accentGreen' :
+                                                  'bg-red-400/10 text-red-400'}`}>
+            <span>
+              {withingsSyncStatus === 'syncing' ? '⟳ Withings 同期中...' :
+               withingsSyncStatus === 'success' ? `✓ Withings 最終同期: ${withingsLastSync ?? ''}` :
+                                                  '✗ Withings 同期エラー'}
+            </span>
+            {withingsSyncStatus === 'error' && (
+              <button onClick={onWithingsSyncNow} className="underline ml-2">再試行</button>
+            )}
+          </div>
+        )}
 
         {/* Body composition cards */}
         <section>

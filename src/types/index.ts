@@ -90,3 +90,14 @@ export interface AppSettings {
   sleepImportMethod: SleepImportMethod
   importHistory: ImportHistoryEntry[]
 }
+
+// ── Withings OAuth2 ───────────────────────────────────────────────────────────
+
+export interface WithingsTokens {
+  access_token:  string
+  refresh_token: string
+  userid:        string
+  expires_at:    number  // Unix timestamp (seconds)
+}
+
+export type WithingsSyncStatus = 'idle' | 'syncing' | 'success' | 'error'

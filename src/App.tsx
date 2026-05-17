@@ -3,11 +3,12 @@ import { useBodyStore } from './hooks/useBodyStore'
 import { useWorkoutStore } from './hooks/useWorkoutStore'
 import { useToast } from './hooks/useToast'
 import { useSettings } from './hooks/useSettings'
-import Dashboard     from './tabs/Dashboard'
-import Charts        from './tabs/Charts'
-import Analysis      from './tabs/Analysis'
+import { useWithingsStore } from './hooks/useWithingsStore'
+import Dashboard      from './tabs/Dashboard'
+import Charts         from './tabs/Charts'
+import Analysis       from './tabs/Analysis'
 import DataManagement from './tabs/DataManagement'
-import Settings      from './tabs/Settings'
+import Settings       from './tabs/Settings'
 import ToastContainer from './components/ui/ToastContainer'
 import type { BodyRecord, SleepRecord, WorkoutData } from './types'
 
@@ -30,14 +31,35 @@ const TAB_TITLES: Record<Tab, string> = {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('dashboard')
+  const [tab, setTab] = useState<Tab>(() => {
+    // Return to settings tab after Withings OAuth callback
+    if (window.location.hash === '#settings') {
+      window.history.replaceState(null, '', '/')
+      return 'settings'
+    }
+    return 'dashboard'
+  })
 
-  const bodyStore   = useBodyStore()
+  const bodyStore    = useBodyStore()
   const workoutStore = useWorkoutStore()
   const { toasts, showToast, dismissToast } = useToast()
   const { settings, setSleepMethod, addImportHistory, clearHistory } = useSettings()
 
-  // ── import handlers (wrap store calls + record history) ──────────────────
+  // ── Withings store ────────────────────────────────────────────────────────
+  const handleWithingsRecords = useCallback((records: BodyRecord[]) => {
+    bodyStore.overwriteBodyRecords(records)
+    addImportHistory({
+      timestamp: new Date().toISOString(),
+      source:    'Withings API',
+      count:     records.length,
+      type:      'body',
+    })
+    showToast(`Withings: ${records.length}件を同期しました`)
+  }, [bodyStore, addImportHistory, showToast])
+
+  const withings = useWithingsStore(handleWithingsRecords)
+
+  // ── import handlers ───────────────────────────────────────────────────────
 
   const handleBodyImport = useCallback((records: BodyRecord[], overwrite: boolean): number => {
     if (overwrite) {
@@ -95,6 +117,9 @@ export default function App() {
                 data={bodyStore.data}
                 sessions={workoutStore.sessions}
                 onNavigateToData={() => setTab('data')}
+                withingsSyncStatus={withings.syncStatus}
+                withingsLastSync={withings.lastSyncLabel}
+                onWithingsSyncNow={withings.syncNow}
               />
             )}
             {t.key === 'charts' && (
@@ -136,6 +161,16 @@ export default function App() {
                 onResetAll={bodyStore.resetAll}
                 onClearHistory={clearHistory}
                 showToast={showToast}
+                withingsConnected={withings.isConnected}
+                withingsSyncStatus={withings.syncStatus}
+                withingsSyncError={withings.syncError}
+                withingsLastSync={withings.lastSyncLabel}
+                onWithingsConnect={withings.connect}
+                onWithingsDisconnect={withings.disconnect}
+                onWithingsSyncNow={withings.syncNow}
+                workoutSameOrigin={!workoutStore.fromFile && workoutStore.sessionCount > 0}
+                workoutSessionCount={workoutStore.sessionCount}
+                workoutLastSync={workoutStore.lastSyncDate}
               />
             )}
           </div>
