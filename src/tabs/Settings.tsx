@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Goals, AppSettings, WithingsSyncStatus } from '../types'
+import type { Goals, AppSettings, WithingsSyncStatus, AutoSleepLastImport } from '../types'
 import { exportBodyCSV, exportSleepCSV, downloadFile } from '../utils/export'
 import type { BodyRecord, SleepRecord } from '../types'
 
@@ -8,6 +8,7 @@ interface Props {
   settings: AppSettings
   bodyRecords: BodyRecord[]
   sleepRecords: SleepRecord[]
+  autoSleepLastImport: AutoSleepLastImport
   onUpdateGoals: (goals: Goals) => void
   onResetBody: () => void
   onResetSleep: () => void
@@ -29,7 +30,7 @@ interface Props {
 }
 
 export default function Settings({
-  goals, settings, bodyRecords, sleepRecords,
+  goals, settings, bodyRecords, sleepRecords, autoSleepLastImport,
   onUpdateGoals, onResetBody, onResetSleep, onResetAll, onClearHistory, showToast,
   withingsConnected, withingsSyncStatus, withingsSyncError, withingsLastSync,
   onWithingsConnect, onWithingsDisconnect, onWithingsSyncNow,
@@ -180,16 +181,25 @@ export default function Settings({
         {/* ── AutoSleep連携状態 ────────────────────────────────────────────── */}
         <section>
           <h2 className="text-sm font-semibold text-white mb-1">AutoSleep 連携</h2>
-          <div className="bg-card rounded-xl p-4">
-            <div className="flex items-center gap-2">
-              <span className="text-accentPurple">📥</span>
-              <div>
-                <p className="text-sm text-white font-medium">CSVインポート（方法A/B/C）</p>
-                <p className="text-xs text-muted">
-                  {lastSleepDate ? `最終インポート: ${lastSleepDate}（${sleepRecords.length}件）` : 'インポートなし'}
-                </p>
-              </div>
-            </div>
+          <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
+            {(['A', 'B'] as const).map(method => {
+              const stat = autoSleepLastImport[method]
+              return (
+                <div key={method} className="flex items-center gap-2">
+                  <span className="text-accentPurple">📥</span>
+                  <div>
+                    <p className="text-sm text-white font-medium">
+                      方法{method}：{method === 'A' ? 'Health Auto Export JSON' : 'AutoSleep CSV'}
+                    </p>
+                    <p className="text-xs text-muted">
+                      {stat
+                        ? `最終取り込み: ${stat.date}（${stat.count}件）`
+                        : '未取り込み'}
+                    </p>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </section>
 

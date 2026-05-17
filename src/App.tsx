@@ -43,7 +43,7 @@ export default function App() {
   const bodyStore    = useBodyStore()
   const workoutStore = useWorkoutStore()
   const { toasts, showToast, dismissToast } = useToast()
-  const { settings, setSleepMethod, addImportHistory, clearHistory } = useSettings()
+  const { settings, addImportHistory, clearHistory } = useSettings()
 
   // ── Withings store ────────────────────────────────────────────────────────
   const handleWithingsRecords = useCallback((records: BodyRecord[]) => {
@@ -139,9 +139,11 @@ export default function App() {
             {t.key === 'data' && (
               <DataManagement
                 settings={settings}
-                onSleepMethodChange={setSleepMethod}
+                autoSleepLastImport={bodyStore.autoSleepLastImport}
                 onBodyImport={handleBodyImport}
                 onSleepImport={handleSleepImport}
+                onAutoSleepImport={bodyStore.importAutoSleepData}
+                onAutoSleepLastImportUpdate={bodyStore.updateAutoSleepLastImport}
                 onWorkoutImport={handleWorkoutImport}
                 workoutSessionCount={workoutStore.sessionCount}
                 workoutLastSync={workoutStore.lastSyncDate}
@@ -155,6 +157,7 @@ export default function App() {
                 settings={settings}
                 bodyRecords={bodyStore.data.bodyRecords}
                 sleepRecords={bodyStore.data.sleepRecords}
+                autoSleepLastImport={bodyStore.autoSleepLastImport}
                 onUpdateGoals={bodyStore.updateGoals}
                 onResetBody={bodyStore.resetBodyData}
                 onResetSleep={bodyStore.resetSleepData}

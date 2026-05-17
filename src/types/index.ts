@@ -101,3 +101,15 @@ export interface WithingsTokens {
 }
 
 export type WithingsSyncStatus = 'idle' | 'syncing' | 'success' | 'error'
+
+// ── AutoSleep 取り込み履歴 ────────────────────────────────────────────────────
+
+export interface AutoSleepMethodStat {
+  date:  string   // 最終取り込み日 (YYYY-MM-DD)
+  count: number   // 取り込み件数
+}
+
+export interface AutoSleepLastImport {
+  A?: AutoSleepMethodStat
+  B?: AutoSleepMethodStat
+}
