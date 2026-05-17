@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // サブパス /workout/ 以下で配信するためのベースパス設定
+  base: '/workout/',
+
   plugins: [
     react(),
     VitePWA({
@@ -65,8 +68,8 @@ export default defineConfig({
         background_color: '#0f0f1a',
         display: 'standalone',
         orientation: 'portrait',
-        start_url: '/',
-        scope: '/',
+        start_url: '/workout/',
+        scope: '/workout/',
         icons: [
           {
             src: '/icon.svg',
@@ -86,5 +89,6 @@ export default defineConfig({
   ],
   server: {
     host: true,
+    port: process.env.PORT ? parseInt(process.env.PORT) : 5175,
   },
 })

@@ -1,11 +1,13 @@
 {
   "name": "health-tracker",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:workout": "cd workout-tracker && npm install && npm run build",
+    "build:all": "npm run build && npm run build:workout && node scripts/merge-dist.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
