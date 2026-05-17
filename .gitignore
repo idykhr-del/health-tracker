@@ -1,0 +1,10 @@
+node_modules/
+workout-tracker/node_modules/
+dist/
+workout-tracker/dist/
+*.local
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tsbuildinfo
