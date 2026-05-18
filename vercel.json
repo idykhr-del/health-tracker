@@ -2,11 +2,6 @@
   "buildCommand": "npm run build:all",
   "outputDirectory": "dist",
   "installCommand": "npm install",
-  "functions": {
-    "api/*.ts": {
-      "runtime": "@vercel/node"
-    }
-  },
   "rewrites": [
     { "source": "/workout/:path*", "destination": "/workout/:path*" },
     { "source": "/api/:path*",     "destination": "/api/:path*" },
