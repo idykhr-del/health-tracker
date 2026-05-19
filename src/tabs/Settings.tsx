@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import type { Goals, AppSettings, WithingsSyncStatus, AutoSleepLastImport } from '../types'
 import { exportBodyCSV, exportSleepCSV, downloadFile } from '../utils/export'
 import type { BodyRecord, SleepRecord } from '../types'
@@ -27,6 +27,95 @@ interface Props {
   workoutSameOrigin: boolean
   workoutSessionCount: number
   workoutLastSync: string | null
+}
+
+// ── デバッグパネル ────────────────────────────────────────────────────────────
+
+function DebugPanel() {
+  const [open, setOpen]   = useState(false)
+  const [info,  setInfo]  = useState<string[]>([])
+
+  const collect = useCallback(() => {
+    const lines: string[] = []
+    const add = (label: string, val: unknown) =>
+      lines.push(`${label}: ${String(val)}`)
+
+    // URLと実行環境
+    add('href',       window.location.href)
+    add('hash',       window.location.hash || '(empty)')
+    add('search',     window.location.search || '(empty)')
+    add('standalone', (navigator as Navigator & { standalone?: boolean }).standalone ?? 'undefined')
+    add('userAgent',  navigator.userAgent.slice(0, 80))
+
+    // localStorage
+    const tokens = localStorage.getItem('withings_tokens')
+    add('withings_tokens', tokens ? `EXISTS (${tokens.slice(0, 40)}...)` : 'NOT FOUND')
+    add('withings_last_sync', localStorage.getItem('withings_last_sync') ?? 'NOT FOUND')
+
+    // ハッシュパラメータ解析（現在のURL）
+    const hash = window.location.hash
+    const qIdx = hash.indexOf('?')
+    if (qIdx !== -1) {
+      const p = new URLSearchParams(hash.slice(qIdx + 1))
+      add('hash.withings_token',   p.get('withings_token')   ? 'EXISTS' : 'not in hash')
+      add('hash.withings_refresh', p.get('withings_refresh') ? 'EXISTS' : 'not in hash')
+      add('hash.withings_userid',  p.get('withings_userid')  ?? 'not in hash')
+    } else {
+      add('hash params', 'none')
+    }
+
+    // localStorage 書き込みテスト
+    try {
+      localStorage.setItem('_dbg_test', '1')
+      const ok = localStorage.getItem('_dbg_test') === '1'
+      localStorage.removeItem('_dbg_test')
+      add('ls write test', ok ? 'OK' : 'FAIL')
+    } catch (e) {
+      add('ls write test', `ERROR: ${e}`)
+    }
+
+    setInfo(lines)
+    setOpen(true)
+  }, [])
+
+  const copyAll = useCallback(() => {
+    navigator.clipboard.writeText(info.join('\n')).catch(() => {/* ignore */})
+  }, [info])
+
+  return (
+    <details className="border border-yellow-500/30 rounded-xl overflow-hidden">
+      <summary
+        className="px-4 py-3 text-xs text-yellow-400 cursor-pointer select-none bg-yellow-500/5"
+        onClick={e => { e.preventDefault(); if (!open) collect(); setOpen(o => !o) }}
+      >
+        🔧 デバッグパネル（Withings連携トラブル用）
+      </summary>
+      {open && (
+        <div className="px-4 pb-4 pt-3 flex flex-col gap-3">
+          <button
+            onClick={collect}
+            className="py-2 bg-yellow-500/20 border border-yellow-500/40 rounded-lg text-xs text-yellow-300"
+          >
+            情報を再取得
+          </button>
+          <div className="bg-black/40 rounded-lg p-3 font-mono text-[10px] text-green-300 leading-relaxed break-all whitespace-pre-wrap max-h-64 overflow-y-auto">
+            {info.join('\n')}
+          </div>
+          <button
+            onClick={copyAll}
+            className="py-2 bg-surface border border-border rounded-lg text-xs text-muted"
+          >
+            全文コピー
+          </button>
+          <p className="text-[10px] text-muted leading-relaxed">
+            「standalone: true」→ PWAモード正常<br />
+            「standalone: false」→ Safariで開かれている（原因はこれ）<br />
+            「withings_tokens: NOT FOUND」→ localStorageに未保存
+          </p>
+        </div>
+      )}
+    </details>
+  )
 }
 
 export default function Settings({
@@ -295,6 +384,9 @@ export default function Settings({
         </section>
 
         <p className="text-center text-xs text-muted">統合ヘルストラッカー v0.0.2</p>
+
+        {/* ── デバッグパネル ────────────────────────────────────────────────── */}
+        <DebugPanel />
 
       </div>
 
