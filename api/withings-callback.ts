@@ -44,6 +44,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       redirect_uri:  redirectUri,
     })
 
+    console.log('[withings-callback] Exchanging code for tokens...')
+
     const response = await fetch('https://wbsapi.withings.net/v2/oauth2', {
       method:  'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -51,6 +53,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     })
 
     const json = await response.json() as WithingsTokenResponse
+    console.log('[withings-callback] Token response status:', json.status)
+
     if (json.status !== 0) {
       return sendErrorPage(res, `トークン取得エラー: ${json.error ?? json.status}`)
     }
@@ -58,13 +62,25 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const { access_token, refresh_token, userid, expires_in } = json.body
     const expires_at = Math.floor(Date.now() / 1000) + (expires_in ?? 10800)
 
-    const tokens = JSON.stringify({ access_token, refresh_token, userid, expires_at })
+    const tokensObj = { access_token, refresh_token, userid, expires_at }
+    const tokensJson = JSON.stringify(tokensObj)
 
-    // localStorage に保存してアプリへ戻す
-    const html = buildSuccessPage(tokens)
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    // ── iOS PWA対応: CookieとlocalStorage両方に書く ──────────────────────────
+    // iOS SafariとPWA(Standalone)はlocalStorageが別々だが、Cookieは共有される。
+    // Set-CookieでサーバーサイドからもCookieを書く（フォールバック）。
+    const cookieValue = encodeURIComponent(tokensJson)
+    const cookieHeader = `withings_pending=${cookieValue}; Path=/; SameSite=Lax; Max-Age=300`
+
+    console.log('[withings-callback] Setting withings_pending cookie and returning success page')
+
+    const html = buildSuccessPage(tokensJson)
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Set-Cookie':   cookieHeader,
+    })
     res.end(html)
   } catch (e) {
+    console.error('[withings-callback] Error:', e)
     return sendErrorPage(res, `ネットワークエラー: ${String(e)}`)
   }
 }
@@ -99,6 +115,7 @@ function buildSuccessPage(tokensJson: string): string {
     .box { text-align: center; padding: 2rem; }
     .icon { font-size: 3rem; margin-bottom: 1rem; }
     p { color: #8892a4; }
+    #status { font-size: 0.75rem; color: #8892a4; margin-top: 1rem; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -106,13 +123,39 @@ function buildSuccessPage(tokensJson: string): string {
     <div class="icon">✅</div>
     <h2>Withings連携が完了しました</h2>
     <p>アプリに戻ってデータを同期します...</p>
+    <div id="status">処理中...</div>
   </div>
   <script>
+    var tokensJson = ${JSON.stringify(tokensJson)};
+    var status = document.getElementById('status');
+
+    // ── 1. localStorage に書く（PWAコンテキストで開かれた場合に有効）──
     try {
-      localStorage.setItem('withings_tokens', ${JSON.stringify(tokensJson)});
+      localStorage.setItem('withings_tokens', tokensJson);
       localStorage.setItem('withings_last_sync', '0');
-    } catch(e) { console.error('localStorage write failed', e); }
-    setTimeout(() => { window.location.href = '/#settings'; }, 800);
+      console.log('[callback] localStorage write OK');
+      status.textContent = 'localStorage: 書き込み成功';
+    } catch(e) {
+      console.warn('[callback] localStorage write failed (expected in Safari context):', e);
+      status.textContent = 'localStorage: ' + e;
+    }
+
+    // ── 2. Cookie に書く（SafariとPWAでCookieは共有される）──────────────
+    try {
+      var encoded = encodeURIComponent(tokensJson);
+      document.cookie = 'withings_pending=' + encoded + '; Path=/; SameSite=Lax; Max-Age=300';
+      console.log('[callback] cookie write OK');
+      status.textContent += ' / Cookie: 書き込み成功';
+    } catch(e) {
+      console.warn('[callback] cookie write failed:', e);
+      status.textContent += ' / Cookie: ' + e;
+    }
+
+    // ── 3. アプリへリダイレクト ─────────────────────────────────────────
+    console.log('[callback] redirecting to app in 1s...');
+    setTimeout(function() {
+      window.location.href = '/#settings';
+    }, 1000);
   </script>
 </body>
 </html>`

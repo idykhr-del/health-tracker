@@ -3,6 +3,7 @@ import type { WithingsTokens, WithingsSyncStatus, BodyRecord } from '../types'
 
 const TOKEN_KEY      = 'withings_tokens'
 const LAST_SYNC_KEY  = 'withings_last_sync'
+const PENDING_COOKIE = 'withings_pending'
 const SYNC_INTERVAL  = 60 * 60 * 1000  // 1時間 (ms)
 
 function loadTokens(): WithingsTokens | null {
@@ -21,6 +22,30 @@ function clearTokens(): void {
   try {
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(LAST_SYNC_KEY)
+  } catch { /* ignore */ }
+}
+
+// ── Cookie helpers ────────────────────────────────────────────────────────────
+// iOS では Safari と PWA(Standalone) で localStorage が別々だが Cookie は共有される。
+// コールバックページで書いた withings_pending Cookie をここで読み取る。
+
+function readPendingCookie(): WithingsTokens | null {
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)withings_pending=([^;]+)/)
+    if (!match) return null
+    const decoded = decodeURIComponent(match[1])
+    console.log('[useWithingsStore] withings_pending cookie found')
+    return JSON.parse(decoded) as WithingsTokens
+  } catch (e) {
+    console.warn('[useWithingsStore] failed to parse withings_pending cookie:', e)
+    return null
+  }
+}
+
+function clearPendingCookie(): void {
+  try {
+    document.cookie = `${PENDING_COOKIE}=; Path=/; Max-Age=0`
+    console.log('[useWithingsStore] withings_pending cookie cleared')
   } catch { /* ignore */ }
 }
 
@@ -154,18 +179,48 @@ export function useWithingsStore(
     syncNow(tokens)
   }, [tokens, syncNow])
 
-  // ── Detect return from OAuth callback (tokens written to localStorage) ────
+  // ── Detect return from OAuth callback ────────────────────────────────────
+  // iOS PWAはSafariとlocalStorageが別々。CookieはSafari/PWA間で共有される。
+  // mount・visibilitychange・focus の3タイミングでCookieを確認し、
+  // 見つかればlocalStorageへ移してトークンとして採用する。
   useEffect(() => {
-    const handleFocus = () => {
+    const tokensRef_current = tokens  // snapshot for closure
+
+    const checkForPendingAuth = () => {
+      console.log('[useWithingsStore] checkForPendingAuth called, isConnected:', !!tokensRef_current)
+
+      // 1. Cookie経由（iOS Safari→PWA連携の主要経路）
+      const pending = readPendingCookie()
+      if (pending) {
+        clearPendingCookie()
+        saveTokens(pending)
+        localStorage.setItem('withings_last_sync', '0')
+        console.log('[useWithingsStore] tokens loaded from cookie ✅')
+        setTokens(pending)
+        syncedRef.current = false
+        return
+      }
+
+      // 2. localStorage直読み（PWAコンテキスト内でコールバックが開かれた場合）
       const fresh = loadTokens()
-      if (fresh && !tokens) {
+      if (fresh && !tokensRef_current) {
+        console.log('[useWithingsStore] tokens loaded from localStorage ✅')
         setTokens(fresh)
-        // Auto-sync immediately after connection
         syncedRef.current = false
       }
     }
-    window.addEventListener('focus', handleFocus)
-    return () => window.removeEventListener('focus', handleFocus)
+
+    // マウント時にも即チェック（リダイレクト後の再描画に対応）
+    checkForPendingAuth()
+
+    document.addEventListener('visibilitychange', checkForPendingAuth)
+    window.addEventListener('focus', checkForPendingAuth)
+    return () => {
+      document.removeEventListener('visibilitychange', checkForPendingAuth)
+      window.removeEventListener('focus', checkForPendingAuth)
+    }
+  // tokens が変化したらクロージャを更新するため再登録
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tokens])
 
   return {
