@@ -32,9 +32,12 @@ const TAB_TITLES: Record<Tab, string> = {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
-    // Return to settings tab after Withings OAuth callback
-    if (window.location.hash === '#settings') {
-      window.history.replaceState(null, '', '/')
+    const hash = window.location.hash
+    // '#settings'  : 通常のコールバック戻り
+    // '#/settings' : URLハッシュパラメータ方式のコールバック戻り（useWithingsStore が URL をクリーンアップ済み）
+    if (hash === '#settings' || hash.startsWith('#/settings')) {
+      // '#/settings?...' の場合は useWithingsStore 側でクリーンアップするのでここでは触らない
+      if (hash === '#settings') window.history.replaceState(null, '', '/')
       return 'settings'
     }
     return 'dashboard'

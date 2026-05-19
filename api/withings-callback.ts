@@ -62,23 +62,23 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const { access_token, refresh_token, userid, expires_in } = json.body
     const expires_at = Math.floor(Date.now() / 1000) + (expires_in ?? 10800)
 
-    const tokensObj = { access_token, refresh_token, userid, expires_at }
-    const tokensJson = JSON.stringify(tokensObj)
-
-    // ── iOS PWA対応: CookieとlocalStorage両方に書く ──────────────────────────
-    // iOS SafariとPWA(Standalone)はlocalStorageが別々だが、Cookieは共有される。
-    // Set-CookieでサーバーサイドからもCookieを書く（フォールバック）。
-    const cookieValue = encodeURIComponent(tokensJson)
-    const cookieHeader = `withings_pending=${cookieValue}; Path=/; SameSite=Lax; Max-Age=300`
-
-    console.log('[withings-callback] Setting withings_pending cookie and returning success page')
-
-    const html = buildSuccessPage(tokensJson)
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Set-Cookie':   cookieHeader,
+    // ── iOS PWA対応: URLハッシュパラメータ方式 ───────────────────────────────
+    // iOS SafariとPWA(Standalone)はlocalStorage/Cookieが分離されるケースがある。
+    // リダイレクト先URLのハッシュにトークンを埋め込み、フロント側で読み取る方式が最も確実。
+    const params = new URLSearchParams({
+      withings_token:   access_token,
+      withings_refresh: refresh_token,
+      withings_userid:  userid,
+      withings_expires: String(expires_at),
     })
-    res.end(html)
+
+    const appBase = `${protocol}://${host}`
+    const redirectUrl = `${appBase}/#/settings?${params.toString()}`
+
+    console.log('[withings-callback] Redirecting to app with token params:', appBase + '/#/settings?...')
+
+    res.writeHead(302, { Location: redirectUrl })
+    res.end()
   } catch (e) {
     console.error('[withings-callback] Error:', e)
     return sendErrorPage(res, `ネットワークエラー: ${String(e)}`)
@@ -98,67 +98,6 @@ interface WithingsTokenResponse {
     scope:         string
     token_type:    string
   }
-}
-
-// ── HTML生成ヘルパー ──────────────────────────────────────────────────────────
-
-function buildSuccessPage(tokensJson: string): string {
-  return `<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Withings連携完了</title>
-  <style>
-    body { font-family: -apple-system, sans-serif; background: #0f0f1a; color: #fff;
-           display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .box { text-align: center; padding: 2rem; }
-    .icon { font-size: 3rem; margin-bottom: 1rem; }
-    p { color: #8892a4; }
-    #status { font-size: 0.75rem; color: #8892a4; margin-top: 1rem; word-break: break-all; }
-  </style>
-</head>
-<body>
-  <div class="box">
-    <div class="icon">✅</div>
-    <h2>Withings連携が完了しました</h2>
-    <p>アプリに戻ってデータを同期します...</p>
-    <div id="status">処理中...</div>
-  </div>
-  <script>
-    var tokensJson = ${JSON.stringify(tokensJson)};
-    var status = document.getElementById('status');
-
-    // ── 1. localStorage に書く（PWAコンテキストで開かれた場合に有効）──
-    try {
-      localStorage.setItem('withings_tokens', tokensJson);
-      localStorage.setItem('withings_last_sync', '0');
-      console.log('[callback] localStorage write OK');
-      status.textContent = 'localStorage: 書き込み成功';
-    } catch(e) {
-      console.warn('[callback] localStorage write failed (expected in Safari context):', e);
-      status.textContent = 'localStorage: ' + e;
-    }
-
-    // ── 2. Cookie に書く（SafariとPWAでCookieは共有される）──────────────
-    try {
-      var encoded = encodeURIComponent(tokensJson);
-      document.cookie = 'withings_pending=' + encoded + '; Path=/; SameSite=Lax; Max-Age=300';
-      console.log('[callback] cookie write OK');
-      status.textContent += ' / Cookie: 書き込み成功';
-    } catch(e) {
-      console.warn('[callback] cookie write failed:', e);
-      status.textContent += ' / Cookie: ' + e;
-    }
-
-    // ── 3. アプリへリダイレクト ─────────────────────────────────────────
-    console.log('[callback] redirecting to app in 1s...');
-    setTimeout(function() {
-      window.location.href = '/#settings';
-    }, 1000);
-  </script>
-</body>
-</html>`
 }
 
 function sendErrorPage(res: ServerResponse, message: string) {

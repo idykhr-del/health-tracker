@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { WithingsTokens, WithingsSyncStatus, BodyRecord } from '../types'
 
-const TOKEN_KEY      = 'withings_tokens'
-const LAST_SYNC_KEY  = 'withings_last_sync'
-const PENDING_COOKIE = 'withings_pending'
-const SYNC_INTERVAL  = 60 * 60 * 1000  // 1時間 (ms)
+const TOKEN_KEY     = 'withings_tokens'
+const LAST_SYNC_KEY = 'withings_last_sync'
+const SYNC_INTERVAL = 60 * 60 * 1000  // 1時間 (ms)
 
 function loadTokens(): WithingsTokens | null {
   try {
@@ -25,28 +24,36 @@ function clearTokens(): void {
   } catch { /* ignore */ }
 }
 
-// ── Cookie helpers ────────────────────────────────────────────────────────────
-// iOS では Safari と PWA(Standalone) で localStorage が別々だが Cookie は共有される。
-// コールバックページで書いた withings_pending Cookie をここで読み取る。
+// ── URLハッシュパラメータからトークンを読み取る ──────────────────────────────
+// コールバックが /#/settings?withings_token=...&withings_refresh=...&... に
+// リダイレクトするので、ハッシュ部分からパラメータを抽出する。
+// 例: window.location.hash === "#/settings?withings_token=abc&withings_refresh=def&..."
 
-function readPendingCookie(): WithingsTokens | null {
+function parseWithingsHashParams(): WithingsTokens | null {
   try {
-    const match = document.cookie.match(/(?:^|;\s*)withings_pending=([^;]+)/)
-    if (!match) return null
-    const decoded = decodeURIComponent(match[1])
-    console.log('[useWithingsStore] withings_pending cookie found')
-    return JSON.parse(decoded) as WithingsTokens
+    const hash = window.location.hash           // "#/settings?withings_token=..."
+    const qIdx = hash.indexOf('?')
+    if (qIdx === -1) return null
+
+    const params = new URLSearchParams(hash.slice(qIdx + 1))
+    const access_token  = params.get('withings_token')
+    const refresh_token = params.get('withings_refresh')
+    const userid        = params.get('withings_userid')
+    const expires_str   = params.get('withings_expires')
+
+    if (!access_token || !refresh_token || !userid || !expires_str) return null
+
+    console.log('[useWithingsStore] withings token params found in URL hash ✅')
+    return {
+      access_token,
+      refresh_token,
+      userid,
+      expires_at: parseInt(expires_str, 10),
+    }
   } catch (e) {
-    console.warn('[useWithingsStore] failed to parse withings_pending cookie:', e)
+    console.warn('[useWithingsStore] failed to parse hash params:', e)
     return null
   }
-}
-
-function clearPendingCookie(): void {
-  try {
-    document.cookie = `${PENDING_COOKIE}=; Path=/; Max-Age=0`
-    console.log('[useWithingsStore] withings_pending cookie cleared')
-  } catch { /* ignore */ }
 }
 
 function getLastSyncTime(): number {
@@ -83,7 +90,19 @@ interface WithingsDataResponse {
 export function useWithingsStore(
   onRecordsFetched: (records: BodyRecord[]) => void,
 ) {
-  const [tokens,     setTokens]     = useState<WithingsTokens | null>(() => loadTokens())
+  // URLハッシュにトークンがあれば優先して使う（OAuth コールバック直後）
+  const [tokens, setTokens] = useState<WithingsTokens | null>(() => {
+    const fromHash = parseWithingsHashParams()
+    if (fromHash) {
+      saveTokens(fromHash)
+      localStorage.setItem(LAST_SYNC_KEY, '0')
+      // ハッシュはクリーンアップ（useEffect でやると1フレーム遅れるため初期化時に実行）
+      try { window.history.replaceState(null, '', '/#settings') } catch { /* ignore */ }
+      console.log('[useWithingsStore] tokens initialized from URL hash ✅')
+      return fromHash
+    }
+    return loadTokens()
+  })
   const [syncStatus, setSyncStatus] = useState<WithingsSyncStatus>('idle')
   const [syncError,  setSyncError]  = useState<string | null>(null)
   const [lastSyncMs, setLastSyncMs] = useState<number>(() => getLastSyncTime())
@@ -179,48 +198,25 @@ export function useWithingsStore(
     syncNow(tokens)
   }, [tokens, syncNow])
 
-  // ── Detect return from OAuth callback ────────────────────────────────────
-  // iOS PWAはSafariとlocalStorageが別々。CookieはSafari/PWA間で共有される。
-  // mount・visibilitychange・focus の3タイミングでCookieを確認し、
-  // 見つかればlocalStorageへ移してトークンとして採用する。
+  // ── Detect return from OAuth (fallback: focus/visibilitychange) ──────────
+  // URLハッシュからのトークン読み取りは useState 初期化時に済んでいる。
+  // focus/visibilitychange は PWA が一時的にサスペンドされたケースへのフォールバック。
   useEffect(() => {
-    const tokensRef_current = tokens  // snapshot for closure
-
-    const checkForPendingAuth = () => {
-      console.log('[useWithingsStore] checkForPendingAuth called, isConnected:', !!tokensRef_current)
-
-      // 1. Cookie経由（iOS Safari→PWA連携の主要経路）
-      const pending = readPendingCookie()
-      if (pending) {
-        clearPendingCookie()
-        saveTokens(pending)
-        localStorage.setItem('withings_last_sync', '0')
-        console.log('[useWithingsStore] tokens loaded from cookie ✅')
-        setTokens(pending)
-        syncedRef.current = false
-        return
-      }
-
-      // 2. localStorage直読み（PWAコンテキスト内でコールバックが開かれた場合）
+    const checkLocalStorage = () => {
+      if (tokens) return  // already connected
       const fresh = loadTokens()
-      if (fresh && !tokensRef_current) {
-        console.log('[useWithingsStore] tokens loaded from localStorage ✅')
+      if (fresh) {
+        console.log('[useWithingsStore] tokens detected in localStorage on focus ✅')
         setTokens(fresh)
         syncedRef.current = false
       }
     }
-
-    // マウント時にも即チェック（リダイレクト後の再描画に対応）
-    checkForPendingAuth()
-
-    document.addEventListener('visibilitychange', checkForPendingAuth)
-    window.addEventListener('focus', checkForPendingAuth)
+    document.addEventListener('visibilitychange', checkLocalStorage)
+    window.addEventListener('focus', checkLocalStorage)
     return () => {
-      document.removeEventListener('visibilitychange', checkForPendingAuth)
-      window.removeEventListener('focus', checkForPendingAuth)
+      document.removeEventListener('visibilitychange', checkLocalStorage)
+      window.removeEventListener('focus', checkLocalStorage)
     }
-  // tokens が変化したらクロージャを更新するため再登録
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tokens])
 
   return {
