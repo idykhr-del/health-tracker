@@ -2,14 +2,18 @@ import type { IncomingMessage, ServerResponse } from 'http'
 
 /**
  * GET /api/withings-auth
- * Withings OAuth2 認証ページへリダイレクト
+ * Withings OAuth2 認証URLをJSONで返す。
+ *
+ * 302リダイレクト方式だとiOS PWA（Standalone）が外部ドメインへの
+ * リダイレクトを検知してPWAを終了させてしまうため、URLをJSONで返し
+ * フロント側で window.location.href に直接セットする方式に変更。
  *
  * 環境変数:
  *   WITHINGS_CLIENT_ID
  *   WITHINGS_REDIRECT_URI
  */
 export default function handler(_req: IncomingMessage, res: ServerResponse) {
-  const clientId   = process.env.WITHINGS_CLIENT_ID
+  const clientId    = process.env.WITHINGS_CLIENT_ID
   const redirectUri = process.env.WITHINGS_REDIRECT_URI
 
   if (!clientId || !redirectUri) {
@@ -26,7 +30,8 @@ export default function handler(_req: IncomingMessage, res: ServerResponse) {
     state:         'health-tracker',
   })
 
-  const authUrl = `https://account.withings.com/oauth2_user/authorize2?${params.toString()}`
-  res.writeHead(302, { Location: authUrl })
-  res.end()
+  const url = `https://account.withings.com/oauth2_user/authorize2?${params.toString()}`
+
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ url }))
 }

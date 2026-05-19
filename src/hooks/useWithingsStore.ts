@@ -67,9 +67,22 @@ export function useWithingsStore(
   const isConnected  = tokens !== null
   const lastSyncLabel = lastSyncMs > 0 ? relativeTime(lastSyncMs) : null
 
-  // ── connect: redirect to /api/withings-auth ───────────────────────────────
-  const connect = useCallback(() => {
-    window.location.href = '/api/withings-auth'
+  // ── connect: fetch auth URL then navigate directly ───────────────────────
+  // iOS PWA (Standalone) では /api/withings-auth からの302リダイレクトで
+  // 外部ドメインへ転送されるとPWAが終了してホーム画面に戻る。
+  // JSONでURLを受け取り、window.location.href に直接セットすることで回避。
+  const connect = useCallback(async () => {
+    try {
+      const res  = await fetch('/api/withings-auth')
+      const data = await res.json() as { url?: string; error?: string }
+      if (data.url) {
+        window.location.href = data.url
+      } else {
+        console.error('[Withings] auth URL取得失敗:', data.error)
+      }
+    } catch (e) {
+      console.error('[Withings] /api/withings-auth fetch エラー:', e)
+    }
   }, [])
 
   // ── disconnect: clear tokens ──────────────────────────────────────────────
