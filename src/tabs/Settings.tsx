@@ -32,89 +32,79 @@ interface Props {
 // ── デバッグパネル ────────────────────────────────────────────────────────────
 
 function DebugPanel() {
-  const [open, setOpen]   = useState(false)
-  const [info,  setInfo]  = useState<string[]>([])
+  const [info, setInfo] = useState<string[]>([])
 
   const collect = useCallback(() => {
     const lines: string[] = []
     const add = (label: string, val: unknown) =>
       lines.push(`${label}: ${String(val)}`)
 
-    // URLと実行環境
+    add('standalone', (navigator as Navigator & { standalone?: boolean }).standalone ?? 'n/a')
     add('href',       window.location.href)
     add('hash',       window.location.hash || '(empty)')
     add('search',     window.location.search || '(empty)')
-    add('standalone', (navigator as Navigator & { standalone?: boolean }).standalone ?? 'undefined')
-    add('userAgent',  navigator.userAgent.slice(0, 80))
 
-    // localStorage
     const tokens = localStorage.getItem('withings_tokens')
-    add('withings_tokens', tokens ? `EXISTS (${tokens.slice(0, 40)}...)` : 'NOT FOUND')
+    add('withings_tokens',    tokens ? `EXISTS (${tokens.slice(0, 40)}...)` : 'NOT FOUND')
     add('withings_last_sync', localStorage.getItem('withings_last_sync') ?? 'NOT FOUND')
 
-    // ハッシュパラメータ解析（現在のURL）
     const hash = window.location.hash
     const qIdx = hash.indexOf('?')
     if (qIdx !== -1) {
       const p = new URLSearchParams(hash.slice(qIdx + 1))
-      add('hash.withings_token',   p.get('withings_token')   ? 'EXISTS' : 'not in hash')
-      add('hash.withings_refresh', p.get('withings_refresh') ? 'EXISTS' : 'not in hash')
-      add('hash.withings_userid',  p.get('withings_userid')  ?? 'not in hash')
+      add('hash.withings_token',   p.get('withings_token')   ? 'EXISTS' : 'none')
+      add('hash.withings_refresh', p.get('withings_refresh') ? 'EXISTS' : 'none')
+      add('hash.withings_userid',  p.get('withings_userid')  ?? 'none')
     } else {
       add('hash params', 'none')
     }
 
-    // localStorage 書き込みテスト
     try {
-      localStorage.setItem('_dbg_test', '1')
-      const ok = localStorage.getItem('_dbg_test') === '1'
-      localStorage.removeItem('_dbg_test')
+      localStorage.setItem('_dbg', '1')
+      const ok = localStorage.getItem('_dbg') === '1'
+      localStorage.removeItem('_dbg')
       add('ls write test', ok ? 'OK' : 'FAIL')
     } catch (e) {
       add('ls write test', `ERROR: ${e}`)
     }
 
+    add('userAgent', navigator.userAgent.slice(0, 100))
     setInfo(lines)
-    setOpen(true)
   }, [])
+
+  // マウント時に自動収集
+  useState(() => { collect() })
 
   const copyAll = useCallback(() => {
     navigator.clipboard.writeText(info.join('\n')).catch(() => {/* ignore */})
   }, [info])
 
   return (
-    <details className="border border-yellow-500/30 rounded-xl overflow-hidden">
-      <summary
-        className="px-4 py-3 text-xs text-yellow-400 cursor-pointer select-none bg-yellow-500/5"
-        onClick={e => { e.preventDefault(); if (!open) collect(); setOpen(o => !o) }}
-      >
-        🔧 デバッグパネル（Withings連携トラブル用）
-      </summary>
-      {open && (
-        <div className="px-4 pb-4 pt-3 flex flex-col gap-3">
-          <button
-            onClick={collect}
-            className="py-2 bg-yellow-500/20 border border-yellow-500/40 rounded-lg text-xs text-yellow-300"
-          >
-            情報を再取得
-          </button>
-          <div className="bg-black/40 rounded-lg p-3 font-mono text-[10px] text-green-300 leading-relaxed break-all whitespace-pre-wrap max-h-64 overflow-y-auto">
-            {info.join('\n')}
-          </div>
-          <button
-            onClick={copyAll}
-            className="py-2 bg-surface border border-border rounded-lg text-xs text-muted"
-          >
-            全文コピー
-          </button>
-          <p className="text-[10px] text-muted leading-relaxed">
-            「standalone: true」→ PWAモード正常<br />
-            「standalone: false」→ Safariで開かれている（原因はこれ）<br />
-            「withings_tokens: NOT FOUND」→ localStorageに未保存
-          </p>
-        </div>
-      )}
-    </details>
+    <div className="border border-yellow-500/40 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 bg-yellow-500/10 flex items-center justify-between">
+        <span className="text-xs font-semibold text-yellow-400">🔧 デバッグパネル</span>
+        <button
+          onClick={collect}
+          className="text-[10px] px-2 py-1 bg-yellow-500/20 rounded text-yellow-300"
+        >
+          再取得
+        </button>
+      </div>
+      <div className="px-4 py-3 bg-black/40 font-mono text-[11px] text-green-300 leading-6 break-all whitespace-pre-wrap">
+        {info.length > 0 ? info.join('\n') : '取得中...'}
+      </div>
+      <div className="px-4 py-3 flex flex-col gap-2">
+        <button
+          onClick={copyAll}
+          className="py-2.5 bg-surface border border-border rounded-xl text-xs text-muted"
+        >
+          全文コピー（開発者に送る）
+        </button>
+        <p className="text-[10px] text-muted leading-5">
+          standalone: true → PWAモード正常 ／ false → Safariで動作中（これが原因）
+        </p>
+      </div>
+    </div>
   )
 }
 
