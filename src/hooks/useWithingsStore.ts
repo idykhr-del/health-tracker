@@ -80,26 +80,62 @@ export function useWithingsStore(
   // iOS PWA では Service Worker が /api/withings-callback を index.html で返すため、
   // React が起動した後に自ら /api/withings-callback?code=... を fetch してトークンを取得する。
   useEffect(() => {
-    if (codeHandled.current) return
-    const search = window.location.search          // "?code=xxx&state=health-tracker"
-    const params = new URLSearchParams(search)
-    const code   = params.get('code')
-    const state  = params.get('state')
+    // ── デバッグ: 起動時のURL状態を全出力 ──────────────────────────────────
+    console.log('[useWithingsStore:init] href   :', window.location.href)
+    console.log('[useWithingsStore:init] search :', window.location.search)
+    console.log('[useWithingsStore:init] hash   :', window.location.hash)
+    console.log('[useWithingsStore:init] codeHandled:', codeHandled.current)
 
-    if (!code || state !== 'health-tracker') return
+    if (codeHandled.current) {
+      console.log('[useWithingsStore:init] skipped: codeHandled is true')
+      return
+    }
+
+    // href 全体からも code を抽出（search が空のケースに備える）
+    const href   = window.location.href
+    const search = window.location.search
+
+    // URLSearchParams で解析（search が空なら href から直接正規表現で抽出）
+    let code:  string | null = new URLSearchParams(search).get('code')
+    let state: string | null = new URLSearchParams(search).get('state')
+    if (!code) {
+      const m = href.match(/[?&]code=([^&#]+)/)
+      code = m ? decodeURIComponent(m[1]) : null
+    }
+    if (!state) {
+      const m = href.match(/[?&]state=([^&#]+)/)
+      state = m ? decodeURIComponent(m[1]) : null
+    }
+
+    console.log('[useWithingsStore:init] code  :', code ? code.slice(0, 10) + '...' : 'null')
+    console.log('[useWithingsStore:init] state :', state)
+
+    if (!code) {
+      console.log('[useWithingsStore:init] no code found, skipping')
+      return
+    }
+    // state チェック（Withings が変えてくる場合に備えて警告のみに緩和）
+    if (state !== 'health-tracker') {
+      console.warn('[useWithingsStore:init] unexpected state value:', state, '(continuing anyway)')
+    }
+
     codeHandled.current = true
 
-    // URLをすぐにクリーンアップ（codeが残り続けないように）
+    // URLをすぐにクリーンアップ
     window.history.replaceState(null, '', '/')
-
-    console.log('[useWithingsStore] OAuth code detected in URL, fetching tokens...')
+    console.log('[useWithingsStore:init] URL cleaned. Fetching tokens...')
     setSyncStatus('syncing')
 
-    fetch(`/api/withings-callback${search}`)
-      .then(res => res.json())
+    const fetchSearch = `?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state ?? '')}`
+    fetch(`/api/withings-callback${fetchSearch}`)
+      .then(res => {
+        console.log('[useWithingsStore:init] fetch status:', res.status)
+        return res.json()
+      })
       .then((data: CallbackJsonResponse) => {
+        console.log('[useWithingsStore:init] response keys:', Object.keys(data).join(', '))
         if (data.error || !data.access_token || !data.refresh_token || !data.userid) {
-          console.error('[useWithingsStore] Token exchange failed:', data.error)
+          console.error('[useWithingsStore:init] Token exchange failed:', data.error)
           setSyncStatus('error')
           setSyncError(data.error ?? 'トークン取得に失敗しました')
           return
@@ -117,12 +153,11 @@ export function useWithingsStore(
         setSyncStatus('idle')
         syncedRef.current = false
 
-        // 設定タブへのナビゲーションをアプリ全体に通知
         window.dispatchEvent(new CustomEvent('withings:connected'))
-        console.log('[useWithingsStore] Tokens saved from OAuth callback ✅ userid:', data.userid)
+        console.log('[useWithingsStore:init] ✅ Tokens saved! userid:', data.userid)
       })
       .catch(e => {
-        console.error('[useWithingsStore] Fetch error:', e)
+        console.error('[useWithingsStore:init] Fetch error:', e)
         setSyncStatus('error')
         setSyncError(`通信エラー: ${String(e)}`)
       })

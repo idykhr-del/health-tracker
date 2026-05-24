@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import type { Goals, AppSettings, WithingsSyncStatus, AutoSleepLastImport } from '../types'
 import { exportBodyCSV, exportSleepCSV, downloadFile } from '../utils/export'
 import type { BodyRecord, SleepRecord } from '../types'
@@ -32,76 +32,147 @@ interface Props {
 // ── デバッグパネル ────────────────────────────────────────────────────────────
 
 function DebugPanel() {
-  const [info, setInfo] = useState<string[]>([])
+  const [lines, setLines] = useState<string[]>([])
+  const [fetching, setFetching] = useState(false)
+
+  const addLine = useCallback((text: string) => {
+    setLines(prev => [...prev, `${new Date().toISOString().slice(11, 23)} ${text}`])
+  }, [])
 
   const collect = useCallback(() => {
-    const lines: string[] = []
-    const add = (label: string, val: unknown) =>
-      lines.push(`${label}: ${String(val)}`)
+    const rows: string[] = []
+    const r = (label: string, val: unknown) => rows.push(`${label}: ${String(val)}`)
 
-    add('standalone', (navigator as Navigator & { standalone?: boolean }).standalone ?? 'n/a')
-    add('href',       window.location.href)
-    add('hash',       window.location.hash || '(empty)')
-    add('search',     window.location.search || '(empty)')
+    r('standalone', (navigator as Navigator & { standalone?: boolean }).standalone ?? 'n/a')
+    r('href',    window.location.href)
+    r('search',  window.location.search  || '(empty)')
+    r('hash',    window.location.hash    || '(empty)')
+    r('pathname', window.location.pathname)
 
     const tokens = localStorage.getItem('withings_tokens')
-    add('withings_tokens',    tokens ? `EXISTS (${tokens.slice(0, 40)}...)` : 'NOT FOUND')
-    add('withings_last_sync', localStorage.getItem('withings_last_sync') ?? 'NOT FOUND')
+    r('withings_tokens',    tokens ? `EXISTS(${tokens.slice(0,50)}...)` : 'NOT FOUND')
+    r('withings_last_sync', localStorage.getItem('withings_last_sync') ?? 'NOT FOUND')
 
-    const hash = window.location.hash
-    const qIdx = hash.indexOf('?')
-    if (qIdx !== -1) {
-      const p = new URLSearchParams(hash.slice(qIdx + 1))
-      add('hash.withings_token',   p.get('withings_token')   ? 'EXISTS' : 'none')
-      add('hash.withings_refresh', p.get('withings_refresh') ? 'EXISTS' : 'none')
-      add('hash.withings_userid',  p.get('withings_userid')  ?? 'none')
-    } else {
-      add('hash params', 'none')
-    }
+    // search から code を抽出
+    const sp    = new URLSearchParams(window.location.search)
+    const code  = sp.get('code')
+    const state = sp.get('state')
+    r('search.code',  code  ? code.slice(0, 12) + '...' : 'none')
+    r('search.state', state ?? 'none')
+
+    // href から正規表現で抽出（URLSearchParamsで取れないケース）
+    const mCode  = window.location.href.match(/[?&]code=([^&#]+)/)
+    const mState = window.location.href.match(/[?&]state=([^&#]+)/)
+    r('href.code(regex)',  mCode  ? mCode[1].slice(0, 12) + '...' : 'none')
+    r('href.state(regex)', mState ? mState[1] : 'none')
 
     try {
       localStorage.setItem('_dbg', '1')
       const ok = localStorage.getItem('_dbg') === '1'
       localStorage.removeItem('_dbg')
-      add('ls write test', ok ? 'OK' : 'FAIL')
-    } catch (e) {
-      add('ls write test', `ERROR: ${e}`)
-    }
+      r('ls write', ok ? 'OK' : 'FAIL')
+    } catch (e) { r('ls write', `ERROR: ${e}`) }
 
-    add('userAgent', navigator.userAgent.slice(0, 100))
-    setInfo(lines)
+    r('userAgent', navigator.userAgent.slice(0, 80))
+    setLines(rows)
   }, [])
 
   // マウント時に自動収集
-  useState(() => { collect() })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { collect() }, [])
+
+  // ── 手動コード交換 ─────────────────────────────────────────────────────────
+  const manualExchange = useCallback(async () => {
+    setFetching(true)
+    addLine('--- 手動コード交換 開始 ---')
+
+    // code を search と href の両方から探す
+    const sp  = new URLSearchParams(window.location.search)
+    let code  = sp.get('code')
+    let state = sp.get('state')
+    if (!code) {
+      const m = window.location.href.match(/[?&]code=([^&#]+)/)
+      code = m ? decodeURIComponent(m[1]) : null
+    }
+    if (!state) {
+      const m = window.location.href.match(/[?&]state=([^&#]+)/)
+      state = m ? decodeURIComponent(m[1]) : null
+    }
+
+    addLine(`code: ${code ? code.slice(0, 12) + '...' : 'NOT FOUND'}`)
+    addLine(`state: ${state ?? 'null'}`)
+
+    if (!code) {
+      addLine('❌ code が見つかりません。先にWithings認証を行ってください')
+      setFetching(false)
+      return
+    }
+
+    const fetchUrl = `/api/withings-callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state ?? '')}`
+    addLine(`fetch → ${fetchUrl.slice(0, 60)}...`)
+
+    try {
+      const res  = await fetch(fetchUrl)
+      addLine(`HTTP status: ${res.status}`)
+      const json = await res.json() as Record<string, unknown>
+      addLine(`response keys: ${Object.keys(json).join(', ')}`)
+
+      if (json['error']) {
+        addLine(`❌ error: ${json['error']}`)
+      } else if (json['access_token']) {
+        const tokensStr = JSON.stringify(json)
+        localStorage.setItem('withings_tokens', tokensStr)
+        localStorage.setItem('withings_last_sync', '0')
+        addLine('✅ localStorageに保存しました')
+        addLine('ページをリロードして連携状態を確認してください')
+        window.history.replaceState(null, '', '/')
+        // カスタムイベントでアプリに通知
+        window.dispatchEvent(new CustomEvent('withings:connected'))
+        collect()  // パネル情報を再取得
+      } else {
+        addLine('❌ access_tokenが見つかりません')
+        addLine(JSON.stringify(json).slice(0, 200))
+      }
+    } catch (e) {
+      addLine(`❌ fetchエラー: ${e}`)
+    }
+    setFetching(false)
+  }, [addLine, collect])
 
   const copyAll = useCallback(() => {
-    navigator.clipboard.writeText(info.join('\n')).catch(() => {/* ignore */})
-  }, [info])
+    navigator.clipboard.writeText(lines.join('\n')).catch(() => {/* ignore */})
+  }, [lines])
 
   return (
     <div className="border border-yellow-500/40 rounded-xl overflow-hidden">
       <div className="px-4 py-3 bg-yellow-500/10 flex items-center justify-between">
         <span className="text-xs font-semibold text-yellow-400">🔧 デバッグパネル</span>
-        <button
-          onClick={collect}
-          className="text-[10px] px-2 py-1 bg-yellow-500/20 rounded text-yellow-300"
-        >
+        <button onClick={collect} className="text-[10px] px-2 py-1 bg-yellow-500/20 rounded text-yellow-300">
           再取得
         </button>
       </div>
-      <div className="px-4 py-3 bg-black/40 font-mono text-[11px] text-green-300 leading-6 break-all whitespace-pre-wrap">
-        {info.length > 0 ? info.join('\n') : '取得中...'}
+
+      {/* ステータス表示 */}
+      <div className="px-4 py-3 bg-black/40 font-mono text-[11px] text-green-300 leading-5 break-all whitespace-pre-wrap max-h-56 overflow-y-auto">
+        {lines.length > 0 ? lines.join('\n') : '読み込み中...'}
       </div>
+
+      {/* 操作ボタン */}
       <div className="px-4 py-3 flex flex-col gap-2">
         <button
-          onClick={copyAll}
-          className="py-2.5 bg-surface border border-border rounded-xl text-xs text-muted"
+          onClick={manualExchange}
+          disabled={fetching}
+          className={`py-3 rounded-xl text-sm font-semibold
+            ${fetching ? 'bg-border text-muted' : 'bg-yellow-500/20 border border-yellow-500/50 text-yellow-300'}`}
         >
+          {fetching ? '実行中...' : '🔑 手動でコード交換を試みる'}
+        </button>
+        <button onClick={copyAll} className="py-2.5 bg-surface border border-border rounded-xl text-xs text-muted">
           全文コピー（開発者に送る）
         </button>
         <p className="text-[10px] text-muted leading-5">
-          standalone: true → PWAモード正常 ／ false → Safariで動作中（これが原因）
+          standalone: true → PWAモード ／ false → Safari（原因）<br />
+          「手動コード交換」はWithings認証直後に現れる ?code= を使って直接トークンを取得します
         </p>
       </div>
     </div>
