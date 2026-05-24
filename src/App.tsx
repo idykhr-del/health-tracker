@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useBodyStore } from './hooks/useBodyStore'
 import { useWorkoutStore } from './hooks/useWorkoutStore'
 import { useToast } from './hooks/useToast'
@@ -32,16 +32,24 @@ const TAB_TITLES: Record<Tab, string> = {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
-    const hash = window.location.hash
-    // '#settings'  : 通常のコールバック戻り
-    // '#/settings' : URLハッシュパラメータ方式のコールバック戻り（useWithingsStore が URL をクリーンアップ済み）
-    if (hash === '#settings' || hash.startsWith('#/settings')) {
-      // '#/settings?...' の場合は useWithingsStore 側でクリーンアップするのでここでは触らない
-      if (hash === '#settings') window.history.replaceState(null, '', '/')
+    // '#settings': Withings コールバック後の戻り（旧方式・念のため残す）
+    if (window.location.hash === '#settings') {
+      window.history.replaceState(null, '', '/')
+      return 'settings'
+    }
+    // '?code=': OAuth code が URL に残っている → useWithingsStore が処理するのでここでは設定タブを表示
+    if (new URLSearchParams(window.location.search).get('code')) {
       return 'settings'
     }
     return 'dashboard'
   })
+
+  // withings:connected カスタムイベント受信 → 設定タブへ遷移
+  useEffect(() => {
+    const handler = () => setTab('settings')
+    window.addEventListener('withings:connected', handler)
+    return () => window.removeEventListener('withings:connected', handler)
+  }, [])
 
   const bodyStore    = useBodyStore()
   const workoutStore = useWorkoutStore()

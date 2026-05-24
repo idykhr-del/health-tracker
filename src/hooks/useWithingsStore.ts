@@ -24,38 +24,6 @@ function clearTokens(): void {
   } catch { /* ignore */ }
 }
 
-// ── URLハッシュパラメータからトークンを読み取る ──────────────────────────────
-// コールバックが /#/settings?withings_token=...&withings_refresh=...&... に
-// リダイレクトするので、ハッシュ部分からパラメータを抽出する。
-// 例: window.location.hash === "#/settings?withings_token=abc&withings_refresh=def&..."
-
-function parseWithingsHashParams(): WithingsTokens | null {
-  try {
-    const hash = window.location.hash           // "#/settings?withings_token=..."
-    const qIdx = hash.indexOf('?')
-    if (qIdx === -1) return null
-
-    const params = new URLSearchParams(hash.slice(qIdx + 1))
-    const access_token  = params.get('withings_token')
-    const refresh_token = params.get('withings_refresh')
-    const userid        = params.get('withings_userid')
-    const expires_str   = params.get('withings_expires')
-
-    if (!access_token || !refresh_token || !userid || !expires_str) return null
-
-    console.log('[useWithingsStore] withings token params found in URL hash ✅')
-    return {
-      access_token,
-      refresh_token,
-      userid,
-      expires_at: parseInt(expires_str, 10),
-    }
-  } catch (e) {
-    console.warn('[useWithingsStore] failed to parse hash params:', e)
-    return null
-  }
-}
-
 function getLastSyncTime(): number {
   try {
     const raw = localStorage.getItem(LAST_SYNC_KEY)
@@ -77,7 +45,7 @@ function relativeTime(ts: number): string {
   return `${Math.floor(hours / 24)}日前`
 }
 
-// ── Withings API response types (mirrors api/withings-data.ts) ────────────────
+// ── Withings API response types ───────────────────────────────────────────────
 
 interface WithingsDataResponse {
   records:    BodyRecord[]
@@ -85,36 +53,83 @@ interface WithingsDataResponse {
   error?:     string
 }
 
+interface CallbackJsonResponse {
+  access_token?:  string
+  refresh_token?: string
+  userid?:        string
+  expires_at?:    number
+  error?:         string
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useWithingsStore(
   onRecordsFetched: (records: BodyRecord[]) => void,
 ) {
-  // URLハッシュにトークンがあれば優先して使う（OAuth コールバック直後）
-  const [tokens, setTokens] = useState<WithingsTokens | null>(() => {
-    const fromHash = parseWithingsHashParams()
-    if (fromHash) {
-      saveTokens(fromHash)
-      localStorage.setItem(LAST_SYNC_KEY, '0')
-      // ハッシュはクリーンアップ（useEffect でやると1フレーム遅れるため初期化時に実行）
-      try { window.history.replaceState(null, '', '/#settings') } catch { /* ignore */ }
-      console.log('[useWithingsStore] tokens initialized from URL hash ✅')
-      return fromHash
-    }
-    return loadTokens()
-  })
+  const [tokens,     setTokens]     = useState<WithingsTokens | null>(() => loadTokens())
   const [syncStatus, setSyncStatus] = useState<WithingsSyncStatus>('idle')
   const [syncError,  setSyncError]  = useState<string | null>(null)
   const [lastSyncMs, setLastSyncMs] = useState<number>(() => getLastSyncTime())
-  const syncedRef = useRef(false)
+  const syncedRef    = useRef(false)
+  const codeHandled  = useRef(false)  // 二重実行防止
 
-  const isConnected  = tokens !== null
+  const isConnected   = tokens !== null
   const lastSyncLabel = lastSyncMs > 0 ? relativeTime(lastSyncMs) : null
 
-  // ── connect: fetch auth URL then navigate directly ───────────────────────
-  // iOS PWA (Standalone) では /api/withings-auth からの302リダイレクトで
-  // 外部ドメインへ転送されるとPWAが終了してホーム画面に戻る。
-  // JSONでURLを受け取り、window.location.href に直接セットすることで回避。
+  // ── 起動時: URLの ?code= を検出してフロントからトークン交換 ──────────────────
+  // iOS PWA では Service Worker が /api/withings-callback を index.html で返すため、
+  // React が起動した後に自ら /api/withings-callback?code=... を fetch してトークンを取得する。
+  useEffect(() => {
+    if (codeHandled.current) return
+    const search = window.location.search          // "?code=xxx&state=health-tracker"
+    const params = new URLSearchParams(search)
+    const code   = params.get('code')
+    const state  = params.get('state')
+
+    if (!code || state !== 'health-tracker') return
+    codeHandled.current = true
+
+    // URLをすぐにクリーンアップ（codeが残り続けないように）
+    window.history.replaceState(null, '', '/')
+
+    console.log('[useWithingsStore] OAuth code detected in URL, fetching tokens...')
+    setSyncStatus('syncing')
+
+    fetch(`/api/withings-callback${search}`)
+      .then(res => res.json())
+      .then((data: CallbackJsonResponse) => {
+        if (data.error || !data.access_token || !data.refresh_token || !data.userid) {
+          console.error('[useWithingsStore] Token exchange failed:', data.error)
+          setSyncStatus('error')
+          setSyncError(data.error ?? 'トークン取得に失敗しました')
+          return
+        }
+
+        const newTokens: WithingsTokens = {
+          access_token:  data.access_token,
+          refresh_token: data.refresh_token,
+          userid:        data.userid,
+          expires_at:    data.expires_at ?? Math.floor(Date.now() / 1000) + 10800,
+        }
+        saveTokens(newTokens)
+        localStorage.setItem(LAST_SYNC_KEY, '0')
+        setTokens(newTokens)
+        setSyncStatus('idle')
+        syncedRef.current = false
+
+        // 設定タブへのナビゲーションをアプリ全体に通知
+        window.dispatchEvent(new CustomEvent('withings:connected'))
+        console.log('[useWithingsStore] Tokens saved from OAuth callback ✅ userid:', data.userid)
+      })
+      .catch(e => {
+        console.error('[useWithingsStore] Fetch error:', e)
+        setSyncStatus('error')
+        setSyncError(`通信エラー: ${String(e)}`)
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])  // マウント時1回のみ
+
+  // ── connect: auth URLを取得してPWA内で直接遷移 ───────────────────────────────
   const connect = useCallback(async () => {
     try {
       const res  = await fetch('/api/withings-auth')
@@ -129,7 +144,7 @@ export function useWithingsStore(
     }
   }, [])
 
-  // ── disconnect: clear tokens ──────────────────────────────────────────────
+  // ── disconnect: トークンを削除 ────────────────────────────────────────────
   const disconnect = useCallback(() => {
     clearTokens()
     setTokens(null)
@@ -138,7 +153,7 @@ export function useWithingsStore(
     setLastSyncMs(0)
   }, [])
 
-  // ── syncNow: fetch body data from /api/withings-data ─────────────────────
+  // ── syncNow: /api/withings-data からボディデータを取得 ───────────────────────
   const syncNow = useCallback(async (currentTokens?: WithingsTokens) => {
     const t = currentTokens ?? tokens
     if (!t) return
@@ -164,7 +179,6 @@ export function useWithingsStore(
         return
       }
 
-      // Update tokens if refreshed
       if (data.newTokens) {
         const updated: WithingsTokens = {
           ...t,
@@ -189,7 +203,7 @@ export function useWithingsStore(
     }
   }, [tokens, onRecordsFetched])
 
-  // ── Auto-sync on mount if connected and interval elapsed ─────────────────
+  // ── マウント時の自動同期 ──────────────────────────────────────────────────
   useEffect(() => {
     if (!tokens || syncedRef.current) return
     const elapsed = Date.now() - getLastSyncTime()
@@ -197,27 +211,6 @@ export function useWithingsStore(
     syncedRef.current = true
     syncNow(tokens)
   }, [tokens, syncNow])
-
-  // ── Detect return from OAuth (fallback: focus/visibilitychange) ──────────
-  // URLハッシュからのトークン読み取りは useState 初期化時に済んでいる。
-  // focus/visibilitychange は PWA が一時的にサスペンドされたケースへのフォールバック。
-  useEffect(() => {
-    const checkLocalStorage = () => {
-      if (tokens) return  // already connected
-      const fresh = loadTokens()
-      if (fresh) {
-        console.log('[useWithingsStore] tokens detected in localStorage on focus ✅')
-        setTokens(fresh)
-        syncedRef.current = false
-      }
-    }
-    document.addEventListener('visibilitychange', checkLocalStorage)
-    window.addEventListener('focus', checkLocalStorage)
-    return () => {
-      document.removeEventListener('visibilitychange', checkLocalStorage)
-      window.removeEventListener('focus', checkLocalStorage)
-    }
-  }, [tokens])
 
   return {
     isConnected,
