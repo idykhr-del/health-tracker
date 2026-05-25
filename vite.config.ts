@@ -9,11 +9,20 @@ export default defineConfig({
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       workbox: {
+        // ── 新SW を即時アクティブ化 ─────────────────────────────────────────
+        // skipWaiting: 新SW は「waiting」を経ずすぐ activate される
+        // clientsClaim: activate 直後に全ページを制御下に置く
+        // → クライアント側の controllerchange イベントでリロードがかかる
+        skipWaiting: true,
+        clientsClaim: true,
+
         globPatterns: ['**/*.{js,css,html,svg,ico,woff2}'],
         navigateFallback: 'index.html',
         navigationPreload: false,
+
         runtimeCaching: [
           {
+            // HTML ナビゲーション: ネットワーク優先（3秒でフォールバック）
             urlPattern: ({ request }) => request.mode === 'navigate',
             handler: 'NetworkFirst',
             options: {
@@ -23,20 +32,24 @@ export default defineConfig({
             },
           },
           {
+            // JS / CSS: キャッシュを即返しつつバックグラウンドで更新
+            // Vite はファイル名にコンテンツハッシュを付けるため、
+            // 新デプロイ後は新しいファイル名が要求され古いキャッシュは自然に無効化される
             urlPattern: /\.(?:js|css)$/i,
-            handler: 'CacheFirst',
+            handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'assets-cache',
-              expiration: { maxEntries: 30, maxAgeSeconds: 30 * 24 * 60 * 60 },
+              expiration: { maxEntries: 40, maxAgeSeconds: 7 * 24 * 60 * 60 },
               cacheableResponse: { statuses: [0, 200] },
             },
           },
           {
+            // 静的ファイル（SVG・フォント等）: キャッシュ優先・7日TTL
             urlPattern: /\.(?:svg|png|ico|woff2)$/i,
             handler: 'CacheFirst',
             options: {
               cacheName: 'static-cache',
-              expiration: { maxEntries: 20, maxAgeSeconds: 365 * 24 * 60 * 60 },
+              expiration: { maxEntries: 20, maxAgeSeconds: 7 * 24 * 60 * 60 },
               cacheableResponse: { statuses: [0, 200] },
             },
           },
