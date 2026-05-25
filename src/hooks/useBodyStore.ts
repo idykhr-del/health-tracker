@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { loadBodySync, loadBodyAsync, saveBody, clearBody } from '../utils/storage'
 import type { BodyData, BodyRecord, SleepRecord, Goals, AutoSleepLastImport } from '../types'
+import { loadBodyFromNotion, syncBodyRecord, mergeBodyWithNotion } from '../utils/notionBodySync'
 
 const AUTOSLEEP_LAST_IMPORT_KEY = 'autosleep_last_import'
 
@@ -28,17 +29,50 @@ interface AutoSleepImportResponse {
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useBodyStore() {
-  const [data, setData] = useState<BodyData>(() => loadBodySync())
+  const initial = loadBodySync()
+  const [data, setData] = useState<BodyData>(initial)
   const [autoSleepLastImport, setAutoSleepLastImport] = useState<AutoSleepLastImport>(
     () => loadAutoSleepLastImport()
   )
 
-  // Hydrate from IndexedDB on mount (may have more data than localStorage)
+  /**
+   * isBodyNotionLoading: true only when localStorage was empty at boot AND
+   * we are waiting for the first Notion response.
+   */
+  const [isBodyNotionLoading, setIsBodyNotionLoading] = useState<boolean>(
+    initial.bodyRecords.length === 0,
+  )
+
+  const notionFetched = useRef(false)
+
+  // Hydrate from IndexedDB and Notion on mount
   useEffect(() => {
+    // IDB hydration (fast, existing behaviour)
     loadBodyAsync().then(idbData => {
       if (!idbData) return
       setData(prev => mergeBodyData(prev, idbData))
     })
+
+    if (notionFetched.current) return
+    notionFetched.current = true
+
+    // Notion hydration (network, slower)
+    loadBodyFromNotion()
+      .then(notionRecords => {
+        setIsBodyNotionLoading(false)
+        if (!notionRecords || notionRecords.length === 0) return
+        setData(prev => {
+          const merged = mergeBodyWithNotion(prev.bodyRecords, notionRecords)
+          const changed = merged.length !== prev.bodyRecords.length ||
+            merged.some((r, i) => r.date !== prev.bodyRecords[i]?.date)
+          if (!changed) return prev
+          const next = { ...prev, bodyRecords: merged }
+          saveBody(next)
+          return next
+        })
+      })
+      .catch(() => setIsBodyNotionLoading(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const persist = useCallback((next: BodyData) => {
@@ -51,14 +85,14 @@ export function useBodyStore() {
   const addBodyRecords = useCallback((incoming: BodyRecord[]) => {
     setData(prev => {
       const existingDates = new Set(prev.bodyRecords.map(r => r.date))
-      const merged = [
-        ...prev.bodyRecords,
-        ...incoming.filter(r => !existingDates.has(r.date)),
-      ]
+      const newRecords = incoming.filter(r => !existingDates.has(r.date))
+      const merged = [...prev.bodyRecords, ...newRecords]
       const next = { ...prev, bodyRecords: merged }
       saveBody(next)
       return next
     })
+    // Sync new records to Notion (fire-and-forget)
+    incoming.forEach(r => syncBodyRecord(r))
   }, [])
 
   const overwriteBodyRecords = useCallback((incoming: BodyRecord[]) => {
@@ -69,6 +103,8 @@ export function useBodyStore() {
       saveBody(next)
       return next
     })
+    // Sync overwritten records to Notion (fire-and-forget)
+    incoming.forEach(r => syncBodyRecord(r))
   }, [])
 
   // ── Sleep records ─────────────────────────────────────────────────────────
@@ -185,6 +221,7 @@ export function useBodyStore() {
 
   return {
     data,
+    isBodyNotionLoading,
     autoSleepLastImport,
     addBodyRecords,
     addSleepRecords,

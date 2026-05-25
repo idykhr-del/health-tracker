@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import type { Goals, AppSettings, WithingsSyncStatus, AutoSleepLastImport } from '../types'
 import { exportBodyCSV, exportSleepCSV, downloadFile } from '../utils/export'
 import type { BodyRecord, SleepRecord } from '../types'
+import { migrateBodyRecords, hasMigratedBody, markMigratedBody } from '../utils/notionBodySync'
 
 interface Props {
   goals: Goals
@@ -27,6 +28,8 @@ interface Props {
   workoutSameOrigin: boolean
   workoutSessionCount: number
   workoutLastSync: string | null
+  // Notion
+  isBodyNotionLoading?: boolean
 }
 
 // ── デバッグパネル ────────────────────────────────────────────────────────────
@@ -185,9 +188,38 @@ export default function Settings({
   withingsConnected, withingsSyncStatus, withingsSyncError, withingsLastSync,
   onWithingsConnect, onWithingsDisconnect, onWithingsSyncNow,
   workoutSameOrigin, workoutSessionCount, workoutLastSync,
+  isBodyNotionLoading,
 }: Props) {
   const [editGoals, setEditGoals] = useState<Goals>({ ...goals })
   const [confirmReset, setConfirmReset] = useState<'body' | 'sleep' | 'all' | null>(null)
+
+  // ── Notion migration state ─────────────────────────────────────────────────
+  const [migrating,     setMigrating]     = useState(false)
+  const [migrationDone, setMigrationDone] = useState(() => hasMigratedBody())
+  const [migProgress,   setMigProgress]   = useState(0)
+  const [migResult,     setMigResult]     = useState<{ success: number; errors: number } | null>(null)
+
+  const handleMigrate = useCallback(async () => {
+    if (migrating || bodyRecords.length === 0) return
+    setMigrating(true)
+    setMigProgress(0)
+    setMigResult(null)
+
+    const result = await migrateBodyRecords(bodyRecords, ({ done, total }) => {
+      setMigProgress(Math.round((done / total) * 100))
+    })
+
+    setMigResult(result)
+    setMigrating(false)
+
+    if (result.errors === 0) {
+      markMigratedBody()
+      setMigrationDone(true)
+      showToast(`Notionへの移行完了：${result.success}件`, 'success')
+    } else {
+      showToast(`移行完了（エラー ${result.errors}件）`, 'error')
+    }
+  }, [migrating, bodyRecords, showToast])
 
   const handleGoalSave = () => {
     onUpdateGoals(editGoals)
@@ -232,6 +264,102 @@ export default function Settings({
   return (
     <div className="overflow-y-auto h-full pb-6">
       <div className="px-4 pt-4 flex flex-col gap-5">
+
+        {/* ── Notion連携 ──────────────────────────────────────────────────── */}
+        <section>
+          <h2 className="text-sm font-semibold text-white mb-1">Notion 連携</h2>
+          <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
+
+            {/* 同期状態 */}
+            <div className="flex items-center gap-2">
+              {isBodyNotionLoading ? (
+                <>
+                  <span className="text-accent animate-pulse">⏳</span>
+                  <div>
+                    <p className="text-sm text-white font-medium">Notionから読み込み中…</p>
+                    <p className="text-xs text-muted">初回起動時はしばらくお待ちください</p>
+                  </div>
+                </>
+              ) : migrationDone ? (
+                <>
+                  <span className="text-accentGreen text-lg">✅</span>
+                  <div>
+                    <p className="text-sm text-white font-medium">Notion同期 有効</p>
+                    <p className="text-xs text-muted">
+                      体組成データはNotion DBと自動同期されます
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="text-accentOrange text-lg">☁️</span>
+                  <div>
+                    <p className="text-sm text-white font-medium">Notion連携</p>
+                    <p className="text-xs text-muted">
+                      body_records DBと自動同期します。初回はデータを移行してください。
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* 移行セクション */}
+            {!migrationDone && (
+              <div className="flex flex-col gap-2 pt-1 border-t border-border">
+                <p className="text-xs text-muted">
+                  ローカルの体組成データ（{bodyRecords.length}件）をNotionへ一括アップロードします。
+                  初回のみ実行してください。
+                </p>
+
+                {migrating && (
+                  <div className="flex flex-col gap-1">
+                    <div className="h-1.5 bg-surface rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-accent rounded-full transition-all duration-300"
+                        style={{ width: `${migProgress}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted text-right">{migProgress}%</p>
+                  </div>
+                )}
+
+                {migResult && !migrating && (
+                  <p className={`text-xs ${migResult.errors === 0 ? 'text-accentGreen' : 'text-red-400'}`}>
+                    {migResult.errors === 0
+                      ? `✅ ${migResult.success}件の移行が完了しました`
+                      : `⚠️ ${migResult.success}件成功 / ${migResult.errors}件エラー`}
+                  </p>
+                )}
+
+                <button
+                  onClick={handleMigrate}
+                  disabled={migrating || bodyRecords.length === 0}
+                  className={`py-2.5 rounded-xl text-sm font-semibold transition-colors
+                    ${migrating || bodyRecords.length === 0
+                      ? 'bg-border text-muted cursor-not-allowed'
+                      : 'bg-accent text-bg'}`}
+                >
+                  {migrating ? `移行中… (${migProgress}%)` : 'Notionへ移行する'}
+                </button>
+
+                {bodyRecords.length === 0 && (
+                  <p className="text-xs text-muted">
+                    体組成データがありません。先にWithingsまたはCSVからインポートしてください。
+                  </p>
+                )}
+              </div>
+            )}
+
+            {migrationDone && (
+              <button
+                onClick={() => setMigrationDone(false)}
+                className="text-xs text-muted underline text-left"
+              >
+                再移行する
+              </button>
+            )}
+          </div>
+        </section>
 
         {/* ── Withings連携 ────────────────────────────────────────────────── */}
         <section>

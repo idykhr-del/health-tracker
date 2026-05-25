@@ -52,6 +52,7 @@ export default function App() {
   }, [])
 
   const bodyStore    = useBodyStore()
+  const { isBodyNotionLoading } = bodyStore
   const workoutStore = useWorkoutStore()
   const { toasts, showToast, dismissToast } = useToast()
   const { settings, addImportHistory, clearHistory } = useSettings()
@@ -115,6 +116,23 @@ export default function App() {
         <h1 className="text-base font-bold text-white">{TAB_TITLES[tab]}</h1>
         <div className="text-accent text-lg">🏃</div>
       </header>
+
+      {/* Notion loading skeleton — shown only when localStorage was empty */}
+      {isBodyNotionLoading && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-bg gap-3">
+          <div className="text-3xl animate-pulse">🏃</div>
+          <div className="text-sm text-muted animate-pulse">Notionからデータを読み込み中…</div>
+          <div className="flex gap-1.5 mt-1">
+            {[0, 1, 2].map(i => (
+              <div
+                key={i}
+                className="w-2 h-2 rounded-full bg-accent/60"
+                style={{ animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite` }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Page content */}
       <main className="flex-1 overflow-hidden relative">
@@ -185,6 +203,7 @@ export default function App() {
                 workoutSameOrigin={!workoutStore.fromFile && workoutStore.sessionCount > 0}
                 workoutSessionCount={workoutStore.sessionCount}
                 workoutLastSync={workoutStore.lastSyncDate}
+                isBodyNotionLoading={isBodyNotionLoading}
               />
             )}
           </div>
