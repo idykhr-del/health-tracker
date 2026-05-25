@@ -10,6 +10,9 @@ export interface BodyRecord {
   bmi?: number
   fatFreeMass?: number
   bodyFatPct?: number
+  visceralFat?: number   // 内臓脂肪指数 (meastype 170)
+  bmr?: number           // 基礎代謝率 kcal (meastype 226)
+  metabolicAge?: number  // 代謝年齢 (meastype 227)
   source: 'withings_csv' | 'manual'
 }
 

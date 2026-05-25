@@ -7,7 +7,7 @@ import type { BodyData, WorkoutSession } from '../types'
 import EmptyState from '../components/ui/EmptyState'
 
 type Period = '2w' | '1m' | '3m' | 'all'
-type ChartType = 'body' | 'sleep' | 'composite'
+type ChartType = 'body' | 'sleep' | 'composite' | 'detail'
 
 interface Props {
   data: BodyData
@@ -67,10 +67,17 @@ export default function Charts({ data, sessions, onNavigateToData }: Props) {
       const s = sleepMap.get(date)
       return {
         date,
-        label: shortDate(date),
+        label:         shortDate(date),
         weight:        b?.weight        ?? null,
         bodyFatPct:    b?.bodyFatPct    ?? null,
         muscleMass:    b?.muscleMass    ?? null,
+        fatFreeMass:   b?.fatFreeMass   ?? null,
+        boneMass:      b?.boneMass      ?? null,
+        hydration:     b?.hydration     ?? null,
+        bmi:           b?.bmi           ?? null,
+        visceralFat:   b?.visceralFat   ?? null,
+        bmr:           b?.bmr           ?? null,
+        metabolicAge:  b?.metabolicAge  ?? null,
         sleepScore:    s?.sleepScore    ?? null,
         asleepMinutes: s?.asleepMinutes ?? null,
         deepMinutes:   s?.deepMinutes   ?? null,
@@ -92,6 +99,7 @@ export default function Charts({ data, sessions, onNavigateToData }: Props) {
     { key: 'body',      label: '体組成' },
     { key: 'sleep',     label: '睡眠' },
     { key: 'composite', label: '複合' },
+    { key: 'detail',    label: '詳細' },
   ]
 
   const tooltipStyle = {
@@ -131,6 +139,22 @@ export default function Charts({ data, sessions, onNavigateToData }: Props) {
       <Bar  yAxisId="score" dataKey="sleepScore"    name="睡眠スコア"  fill="#a855f7" opacity={0.7} />
       <Line yAxisId="min"   type="monotone" dataKey="asleepMinutes" name="睡眠時間(分)" stroke="#00d4ff" dot={false} strokeWidth={2} connectNulls />
       <Line yAxisId="score" type="monotone" dataKey="hrv"          name="HRV"        stroke="#39ff14" dot={false} strokeWidth={1.5} connectNulls />
+    </ComposedChart>
+  )
+
+  // BMI・内臓脂肪・骨量・水分量・代謝年齢を表示する詳細チャート
+  const renderDetailChart = () => (
+    <ComposedChart data={chartData}>
+      <CartesianGrid strokeDasharray="3 3" stroke="#2a2a4a" />
+      <XAxis dataKey="label" tick={{ fill: '#8892a4', fontSize: 10 }} interval="preserveStartEnd" />
+      <YAxis yAxisId="bmi"     domain={['auto', 'auto']} tick={{ fill: '#8892a4', fontSize: 10 }} width={30} />
+      <YAxis yAxisId="vis"     orientation="right" domain={['auto', 'auto']} tick={{ fill: '#8892a4', fontSize: 10 }} width={30} />
+      <Tooltip contentStyle={tooltipStyle} />
+      <Legend wrapperStyle={{ fontSize: '11px', color: '#8892a4' }} />
+      <Line yAxisId="bmi" type="monotone" dataKey="bmi"          name="BMI"        stroke="#00d4ff" dot={false} strokeWidth={2} connectNulls />
+      <Line yAxisId="vis" type="monotone" dataKey="visceralFat"  name="内臓脂肪"   stroke="#f97316" dot={false} strokeWidth={2} connectNulls />
+      <Line yAxisId="bmi" type="monotone" dataKey="boneMass"     name="骨量(kg)"   stroke="#a855f7" dot={false} strokeWidth={1.5} connectNulls />
+      <Line yAxisId="vis" type="monotone" dataKey="metabolicAge" name="代謝年齢"   stroke="#39ff14" dot={false} strokeWidth={1.5} connectNulls />
     </ComposedChart>
   )
 
@@ -185,19 +209,16 @@ export default function Charts({ data, sessions, onNavigateToData }: Props) {
 
         {/* Chart */}
         <div className="bg-card rounded-xl p-3">
-          {chartType !== 'composite' && (
-            <p className="text-xs text-muted mb-3">
-              {chartType === 'body'
-                ? '紫の縦線 = トレーニング日'
-                : '棒グラフ = 睡眠スコア'}
-            </p>
-          )}
-          {chartType === 'composite' && (
-            <p className="text-xs text-muted mb-3">紫棒 = 睡眠スコア　紫線 = トレーニング日</p>
-          )}
+          <p className="text-xs text-muted mb-3">
+            {chartType === 'body'      ? '紫縦線 = トレーニング日' :
+             chartType === 'sleep'     ? '棒グラフ = 睡眠スコア' :
+             chartType === 'composite' ? '紫棒 = 睡眠スコア　紫縦線 = トレーニング日' :
+                                        'BMI / 内臓脂肪 / 骨量 / 代謝年齢'}
+          </p>
           <ResponsiveContainer width="100%" height={280}>
             {chartType === 'body'      ? renderBodyChart()
             : chartType === 'sleep'    ? renderSleepChart()
+            : chartType === 'detail'   ? renderDetailChart()
             :                           renderCompositeChart()}
           </ResponsiveContainer>
         </div>

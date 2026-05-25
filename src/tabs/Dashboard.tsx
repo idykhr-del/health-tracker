@@ -95,29 +95,61 @@ export default function Dashboard({ data, sessions, onNavigateToData, withingsSy
         {/* Body composition cards */}
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">体組成（最新値）</h2>
-          <div className="grid grid-cols-3 gap-2">
-            <SummaryCard
-              label="体重"
-              value={weekChange.latestWeight}
-              unit="kg"
-              change={weekChange.weightChange}
-              changeUnit="kg"
-            />
-            <SummaryCard
-              label="体脂肪率"
-              value={weekChange.latestBodyFat}
-              unit="%"
-              change={weekChange.bodyFatChange}
-              changeUnit="%"
-            />
-            <SummaryCard
-              label="筋肉量"
-              value={weekChange.latestMuscle}
-              unit="kg"
-              change={weekChange.muscleChange}
-              changeUnit="kg"
-            />
-          </div>
+          {(() => {
+            const latest = bodyRecords.length
+              ? [...bodyRecords].sort((a, b) => b.date.localeCompare(a.date))[0]
+              : null
+            return (
+              <>
+                {/* Row 1: 主要3項目 */}
+                <div className="grid grid-cols-3 gap-2 mb-2">
+                  <SummaryCard
+                    label="体重"
+                    value={weekChange.latestWeight}
+                    unit="kg"
+                    change={weekChange.weightChange}
+                    changeUnit="kg"
+                  />
+                  <SummaryCard
+                    label="体脂肪率"
+                    value={weekChange.latestBodyFat}
+                    unit="%"
+                    change={weekChange.bodyFatChange}
+                    changeUnit="%"
+                  />
+                  <SummaryCard
+                    label="筋肉量"
+                    value={weekChange.latestMuscle}
+                    unit="kg"
+                    change={weekChange.muscleChange}
+                    changeUnit="kg"
+                  />
+                </div>
+                {/* Row 2: 骨量・水分量・除脂肪体重 */}
+                {latest && (latest.boneMass != null || latest.hydration != null || latest.fatFreeMass != null) && (
+                  <div className="grid grid-cols-3 gap-2 mb-2">
+                    <SummaryCard label="骨量"    value={latest.boneMass   ?? '—'} unit="kg" />
+                    <SummaryCard label="水分量"  value={latest.hydration  ?? '—'} unit="kg" />
+                    <SummaryCard label="除脂肪体重" value={latest.fatFreeMass ?? '—'} unit="kg" />
+                  </div>
+                )}
+                {/* Row 3: BMI・内臓脂肪・代謝年齢 */}
+                {latest && (latest.bmi != null || latest.visceralFat != null || latest.metabolicAge != null) && (
+                  <div className="grid grid-cols-3 gap-2 mb-2">
+                    <SummaryCard label="BMI"      value={latest.bmi          ?? '—'} unit="" />
+                    <SummaryCard label="内臓脂肪"  value={latest.visceralFat  ?? '—'} unit="" />
+                    <SummaryCard label="代謝年齢"  value={latest.metabolicAge ?? '—'} unit="歳" />
+                  </div>
+                )}
+                {/* Row 4: 基礎代謝 */}
+                {latest?.bmr != null && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <SummaryCard label="基礎代謝" value={latest.bmr} unit="kcal" />
+                  </div>
+                )}
+              </>
+            )
+          })()}
         </section>
 
         {/* Sleep & workout summary */}
