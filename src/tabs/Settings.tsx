@@ -84,6 +84,83 @@ function DebugPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { collect() }, [])
 
+  // ── Withings API 直接テスト ────────────────────────────────────────────────
+  const testWithingsApi = useCallback(async () => {
+    setFetching(true)
+    addLine('--- Withings API テスト 開始 ---')
+
+    const raw = localStorage.getItem('withings_tokens')
+    if (!raw) {
+      addLine('❌ withings_tokens が localStorage にありません')
+      setFetching(false)
+      return
+    }
+
+    let tokens: Record<string, unknown>
+    try { tokens = JSON.parse(raw) as Record<string, unknown> }
+    catch { addLine('❌ withings_tokens のJSONパース失敗'); setFetching(false); return }
+
+    addLine(`access_token: ${String(tokens['access_token']).slice(0, 12)}...`)
+    addLine('POST /api/withings-data ...')
+
+    try {
+      const res  = await fetch('/api/withings-data', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          access_token:  tokens['access_token'],
+          refresh_token: tokens['refresh_token'],
+        }),
+      })
+      addLine(`HTTP status: ${res.status}`)
+
+      const data = await res.json() as {
+        records?: unknown[]
+        error?:   string
+        debug?: {
+          totalGrps:       number
+          totalSessions:   number
+          recordsReturned: number
+          meastypesFound:  number[]
+          meastypeCounts:  Record<number, number>
+          latestRecord:    Record<string, unknown> | null
+        }
+      }
+
+      if (data.error) { addLine(`❌ error: ${data.error}`); setFetching(false); return }
+
+      addLine(`records: ${data.records?.length ?? 0}件`)
+
+      if (data.debug) {
+        const d = data.debug
+        addLine(`totalGrps: ${d.totalGrps}`)
+        addLine(`totalSessions: ${d.totalSessions}`)
+        addLine(`meastypesFound: [${d.meastypesFound.join(', ')}]`)
+
+        // meastype → ラベルの対応表
+        const LABELS: Record<number, string> = {
+          1: '体重', 5: '除脂肪(v2)', 6: '体脂肪率', 7: '水分(v2)',
+          8: '筋肉量?', 73: 'BMI', 76: '除脂肪体重', 77: '水分量',
+          88: '骨量', 170: '内臓脂肪', 226: '基礎代謝', 227: '代謝年齢',
+        }
+        for (const [type, count] of Object.entries(d.meastypeCounts)) {
+          const label = LABELS[Number(type)] ?? `type${type}`
+          addLine(`  meastype ${type}(${label}): ${count}件`)
+        }
+
+        if (d.latestRecord) {
+          addLine('最新レコード:')
+          for (const [k, v] of Object.entries(d.latestRecord)) {
+            if (k !== 'source') addLine(`  ${k}: ${v}`)
+          }
+        }
+      }
+    } catch (e) {
+      addLine(`❌ fetchエラー: ${e}`)
+    }
+    setFetching(false)
+  }, [addLine])
+
   // ── 手動コード交換 ─────────────────────────────────────────────────────────
   const manualExchange = useCallback(async () => {
     setFetching(true)
@@ -163,6 +240,14 @@ function DebugPanel() {
       {/* 操作ボタン */}
       <div className="px-4 py-3 flex flex-col gap-2">
         <button
+          onClick={testWithingsApi}
+          disabled={fetching}
+          className={`py-3 rounded-xl text-sm font-semibold
+            ${fetching ? 'bg-border text-muted' : 'bg-blue-500/20 border border-blue-500/50 text-blue-300'}`}
+        >
+          {fetching ? '実行中...' : '📡 Withings APIを直接テスト'}
+        </button>
+        <button
           onClick={manualExchange}
           disabled={fetching}
           className={`py-3 rounded-xl text-sm font-semibold
@@ -174,8 +259,8 @@ function DebugPanel() {
           全文コピー（開発者に送る）
         </button>
         <p className="text-[10px] text-muted leading-5">
-          standalone: true → PWAモード ／ false → Safari（原因）<br />
-          「手動コード交換」はWithings認証直後に現れる ?code= を使って直接トークンを取得します
+          「Withings APIテスト」→ どのmeastypeが返ってきているか確認<br />
+          「手動コード交換」→ Withings認証直後の ?code= を使って連携
         </p>
       </div>
     </div>

@@ -51,9 +51,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     if (grps === null) return json(res, 502, { error: 'Withings API error after token refresh' })
   }
 
-  const records = parseMeasureGroups(grps)
-  console.log(`[withings-data] Returning ${records.length} records`)
-  return json(res, 200, { records, ...(newTokens ? { newTokens } : {}) })
+  const { records, debug } = parseMeasureGroups(grps)
+  console.log(`[withings-data] records=${records.length} grps=${grps.length}`)
+  console.log(`[withings-data] meastypes found:`, debug.meastypesFound)
+  console.log(`[withings-data] sample (latest):`, JSON.stringify(records.at(-1) ?? null))
+  return json(res, 200, { records, debug, ...(newTokens ? { newTokens } : {}) })
 }
 
 // ── 型定義 ───────────────────────────────────────────────────────────────────
@@ -195,10 +197,36 @@ interface ParsedRecord {
 }
 
 /**
+interface ParseResult {
+  records: ParsedRecord[]
+  debug: {
+    totalGrps:      number
+    totalSessions:  number
+    recordsReturned: number
+    /** 実際にAPIレスポンスに含まれていた meastype の一覧（重複除去） */
+    meastypesFound: number[]
+    /** meastype → 件数 */
+    meastypeCounts: Record<number, number>
+    /** 最新レコードの各フィールド値（nullなら未取得） */
+    latestRecord:   Partial<ParsedRecord> | null
+  }
+}
+
+/**
  * measuregrp ごとに全フィールドをまとめて ParsedRecord に変換する。
  * 同じ日に複数の計測がある場合はフィールド数が最も多いものを採用。
+ * デバッグ用に meastypesFound / meastypeCounts も返す。
  */
-function parseMeasureGroups(grps: WithingsMeasureGrp[]): ParsedRecord[] {
+function parseMeasureGroups(grps: WithingsMeasureGrp[]): ParseResult {
+  // 実際に返ってきた meastype を集計
+  const meastypeCounts: Record<number, number> = {}
+  for (const grp of grps) {
+    for (const m of grp.measures) {
+      meastypeCounts[m.type] = (meastypeCounts[m.type] ?? 0) + 1
+    }
+  }
+  const meastypesFound = Object.keys(meastypeCounts).map(Number).sort((a, b) => a - b)
+
   // grpid → セッションデータ
   const sessions = new Map<number, {
     grpid:  number
@@ -209,7 +237,7 @@ function parseMeasureGroups(grps: WithingsMeasureGrp[]): ParsedRecord[] {
 
   for (const grp of grps) {
     // UTC → JST(+09:00) で日付文字列を作る
-    const jstMs = grp.date * 1000 + 9 * 3600 * 1000
+    const jstMs  = grp.date * 1000 + 9 * 3600 * 1000
     const jstIso = new Date(jstMs).toISOString()
     const date   = jstIso.slice(0, 10)   // YYYY-MM-DD
     const time   = jstIso.slice(11, 16)  // HH:MM
@@ -255,7 +283,19 @@ function parseMeasureGroups(grps: WithingsMeasureGrp[]): ParsedRecord[] {
     })
   }
 
-  return records.sort((a, b) => a.date.localeCompare(b.date))
+  records.sort((a, b) => a.date.localeCompare(b.date))
+
+  return {
+    records,
+    debug: {
+      totalGrps:       grps.length,
+      totalSessions:   sessions.size,
+      recordsReturned: records.length,
+      meastypesFound,
+      meastypeCounts,
+      latestRecord:    records.at(-1) ?? null,
+    },
+  }
 }
 
 // ── ユーティリティ ────────────────────────────────────────────────────────────
