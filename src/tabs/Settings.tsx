@@ -100,7 +100,10 @@ function DebugPanel() {
     try { tokens = JSON.parse(raw) as Record<string, unknown> }
     catch { addLine('❌ withings_tokens のJSONパース失敗'); setFetching(false); return }
 
-    addLine(`access_token: ${String(tokens['access_token']).slice(0, 12)}...`)
+    // access_token の最初の20文字を表示（デバッグ用）
+    const tokenStr = String(tokens['access_token'] ?? '')
+    addLine(`access_token(20文字): ${tokenStr.slice(0, 20)}...`)
+    addLine(`access_token 長さ: ${tokenStr.length}文字`)
     addLine('POST /api/withings-data ...')
 
     try {
@@ -115,8 +118,13 @@ function DebugPanel() {
       addLine(`HTTP status: ${res.status}`)
 
       const data = await res.json() as {
-        records?: unknown[]
-        error?:   string
+        records?:        unknown[]
+        error?:          string
+        step?:           string
+        httpStatus?:     number
+        params_sent?:    Record<string, string>
+        url_called?:     string
+        rawApiResponse?: string
         debug?: {
           totalGrps:       number
           totalSessions:   number
@@ -127,9 +135,30 @@ function DebugPanel() {
         }
       }
 
+      // デバッグ用シンプル版のレスポンス表示
+      if (data.step) addLine(`step: ${data.step}`)
+      if (data.httpStatus !== undefined) addLine(`Withings HTTP: ${data.httpStatus}`)
+      if (data.params_sent) {
+        addLine(`params: ${JSON.stringify(data.params_sent)}`)
+      }
+      if (data.url_called) {
+        addLine(`url: ${data.url_called.slice(0, 80)}`)
+      }
+
+      // rawApiResponse の最初の500文字を表示
+      if (data.rawApiResponse !== undefined) {
+        const raw500 = data.rawApiResponse.slice(0, 500)
+        addLine(`--- rawApiResponse(500文字) ---`)
+        // 長い文字列を50文字ずつ改行して表示
+        for (let i = 0; i < raw500.length; i += 80) {
+          addLine(raw500.slice(i, i + 80))
+        }
+        addLine(`--- end (total ${data.rawApiResponse.length}文字) ---`)
+      }
+
       if (data.error) { addLine(`❌ error: ${data.error}`); setFetching(false); return }
 
-      addLine(`records: ${data.records?.length ?? 0}件`)
+      if (data.records !== undefined) addLine(`records: ${data.records.length}件`)
 
       if (data.debug) {
         const d = data.debug
@@ -137,7 +166,6 @@ function DebugPanel() {
         addLine(`totalSessions: ${d.totalSessions}`)
         addLine(`meastypesFound: [${d.meastypesFound.join(', ')}]`)
 
-        // meastype → ラベルの対応表
         const LABELS: Record<number, string> = {
           1: '体重', 5: '除脂肪(v2)', 6: '体脂肪率', 7: '水分(v2)',
           8: '筋肉量?', 73: 'BMI', 76: '除脂肪体重', 77: '水分量',

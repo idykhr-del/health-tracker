@@ -55,10 +55,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   // URLSearchParams はカンマを %2C にエンコードするため手動結合
+  // エンドポイントを /v2/measure に変更（/measure で 0件になる問題の調査）
   const queryString = Object.entries(params)
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
     .join('&')
-  const url = `https://wbsapi.withings.net/measure?${queryString}`
+  const url = `https://wbsapi.withings.net/v2/measure?${queryString}`
 
   let rawApiResponse = ''
   try {
