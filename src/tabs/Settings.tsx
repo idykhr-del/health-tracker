@@ -118,68 +118,56 @@ function DebugPanel() {
       addLine(`HTTP status: ${res.status}`)
 
       const data = await res.json() as {
-        records?:        unknown[]
-        error?:          string
-        step?:           string
-        httpStatus?:     number
-        params_sent?:    Record<string, string>
-        url_called?:     string
-        rawApiResponse?: string
+        records?: Record<string, unknown>[]
+        error?:   string
+        detail?:  string
         debug?: {
           totalGrps:       number
           totalSessions:   number
           recordsReturned: number
           meastypesFound:  number[]
           meastypeCounts:  Record<number, number>
+          firstRecord:     Record<string, unknown> | null
           latestRecord:    Record<string, unknown> | null
         }
       }
 
-      // デバッグ用シンプル版のレスポンス表示
-      if (data.step) addLine(`step: ${data.step}`)
-      if (data.httpStatus !== undefined) addLine(`Withings HTTP: ${data.httpStatus}`)
-      if (data.params_sent) {
-        addLine(`params: ${JSON.stringify(data.params_sent)}`)
-      }
-      if (data.url_called) {
-        addLine(`url: ${data.url_called.slice(0, 80)}`)
+      if (data.error) {
+        addLine(`❌ error: ${data.error}`)
+        if (data.detail) addLine(`  detail: ${data.detail}`)
+        setFetching(false); return
       }
 
-      // rawApiResponse の最初の500文字を表示
-      if (data.rawApiResponse !== undefined) {
-        const raw500 = data.rawApiResponse.slice(0, 500)
-        addLine(`--- rawApiResponse(500文字) ---`)
-        // 長い文字列を50文字ずつ改行して表示
-        for (let i = 0; i < raw500.length; i += 80) {
-          addLine(raw500.slice(i, i + 80))
-        }
-        addLine(`--- end (total ${data.rawApiResponse.length}文字) ---`)
-      }
-
-      if (data.error) { addLine(`❌ error: ${data.error}`); setFetching(false); return }
-
-      if (data.records !== undefined) addLine(`records: ${data.records.length}件`)
+      // records 件数
+      addLine(`✅ records: ${data.records?.length ?? 0}件`)
 
       if (data.debug) {
         const d = data.debug
-        addLine(`totalGrps: ${d.totalGrps}`)
-        addLine(`totalSessions: ${d.totalSessions}`)
+        addLine(`totalGrps: ${d.totalGrps} / totalSessions: ${d.totalSessions}`)
         addLine(`meastypesFound: [${d.meastypesFound.join(', ')}]`)
 
         const LABELS: Record<number, string> = {
-          1: '体重', 5: '除脂肪(v2)', 6: '体脂肪率', 7: '水分(v2)',
-          8: '筋肉量?', 73: 'BMI', 76: '除脂肪体重', 77: '水分量',
-          88: '骨量', 170: '内臓脂肪', 226: '基礎代謝', 227: '代謝年齢',
+          1: '体重', 6: '体脂肪率', 8: '筋肉量', 73: 'BMI',
+          76: '除脂肪体重', 77: '水分量', 88: '骨量',
+          170: '内臓脂肪', 226: '基礎代謝', 227: '代謝年齢',
         }
         for (const [type, count] of Object.entries(d.meastypeCounts)) {
           const label = LABELS[Number(type)] ?? `type${type}`
-          addLine(`  meastype ${type}(${label}): ${count}件`)
+          addLine(`  meastype${type}(${label}): ${count}件`)
         }
 
+        // 最初のレコード
+        if (d.firstRecord) {
+          addLine('--- 最初のレコード ---')
+          for (const [k, v] of Object.entries(d.firstRecord)) {
+            if (k !== 'source' && v !== undefined) addLine(`  ${k}: ${v}`)
+          }
+        }
+        // 最新レコード
         if (d.latestRecord) {
-          addLine('最新レコード:')
+          addLine('--- 最新のレコード ---')
           for (const [k, v] of Object.entries(d.latestRecord)) {
-            if (k !== 'source') addLine(`  ${k}: ${v}`)
+            if (k !== 'source' && v !== undefined) addLine(`  ${k}: ${v}`)
           }
         }
       }
