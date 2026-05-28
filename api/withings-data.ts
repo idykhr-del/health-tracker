@@ -42,15 +42,23 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   // ── ② Withings API 呼び出し（meastype=1 のみ・生レスポンス返却）────────────
-  const startdate = Math.floor(Date.now() / 1000) - 30 * 24 * 3600  // 30日前
+  // startdate は除去して全期間取得。startdate=0 や直近30日だとデータが返らないケースがある。
+  // Withings API: startdate なし = 全件、または startdate=1577836800 (2020-01-01) で固定
+
+  const params: Record<string, string> = {
+    action:   'getmeas',
+    meastype: '1',       // 体重のみ（疎通確認）
+    category: '1',
+    // startdate は意図的に除去（全期間取得）
+    // lastupdate も除去
+    offset:   '0',
+  }
 
   // URLSearchParams はカンマを %2C にエンコードするため手動結合
-  const url = 'https://wbsapi.withings.net/measure'
-    + '?action=getmeas'
-    + '&meastype=1'                    // 体重のみ（シンプル疎通確認）
-    + '&category=1'
-    + `&startdate=${startdate}`
-    + '&offset=0'
+  const queryString = Object.entries(params)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+    .join('&')
+  const url = `https://wbsapi.withings.net/measure?${queryString}`
 
   let rawApiResponse = ''
   try {
@@ -63,16 +71,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     // APIの生テキストをそのまま返す（パース処理なし）
     return json(res, 200, {
-      step:           'withings_api_call_done',
+      step:            'withings_api_call_done',
       httpStatus,
-      url_called:     url.replace(access_token, '[TOKEN]'),  // トークンをマスク
+      params_sent:     params,              // ← 送ったパラメータ（デバッグ用）
+      url_called:      url,                 // トークンはヘッダー送信のため URLに含まれない
       rawApiResponse,
     })
   } catch (e) {
     return json(res, 502, {
-      step:  'fetch_failed',
-      error: String(e),
-      url_called: url,
+      step:        'fetch_failed',
+      error:       String(e),
+      params_sent: params,
+      url_called:  url,
     })
   }
 }
