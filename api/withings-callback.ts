@@ -68,7 +68,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const { access_token, refresh_token, userid, expires_in } = data.body
     const expires_at = Math.floor(Date.now() / 1000) + (expires_in ?? 10800)
 
+    // ── デバッグ: トークン長を確認（Vercel Function Logs に出力） ──────────────
     console.log('[withings-callback] Success, userid:', userid)
+    console.log('[withings-callback] access_token  length:', access_token?.length  ?? 'undefined')
+    console.log('[withings-callback] refresh_token length:', refresh_token?.length ?? 'undefined')
+    console.log('[withings-callback] access_token  prefix:', access_token?.slice(0, 10))
+    // ──────────────────────────────────────────────────────────────────────────
+
     return json(res, 200, { access_token, refresh_token, userid, expires_at })
 
   } catch (e) {

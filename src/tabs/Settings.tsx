@@ -235,6 +235,35 @@ function DebugPanel() {
     setFetching(false)
   }, [addLine, collect])
 
+  // ── localStorageの生のトークン表示 ────────────────────────────────────────
+  const showRawToken = useCallback(() => {
+    addLine('--- withings_tokens 生の値 ---')
+    const raw = localStorage.getItem('withings_tokens')
+    if (!raw) {
+      addLine('❌ withings_tokens が存在しません')
+      return
+    }
+    addLine(`全体の長さ: ${raw.length}文字`)
+    // 100文字ずつ表示（最大300文字）
+    for (let i = 0; i < Math.min(raw.length, 300); i += 100) {
+      addLine(`[${i}-${Math.min(i + 100, raw.length)}]: ${raw.slice(i, i + 100)}`)
+    }
+    if (raw.length > 300) addLine(`... (残り ${raw.length - 300}文字省略)`)
+
+    // パースして各フィールドの長さも表示
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      addLine('--- フィールド別の長さ ---')
+      for (const [k, v] of Object.entries(parsed)) {
+        const len = typeof v === 'string' ? v.length : JSON.stringify(v).length
+        addLine(`  ${k}: ${len}文字`)
+      }
+    } catch (e) {
+      addLine(`❌ JSONパース失敗: ${e}`)
+    }
+    addLine('--- end ---')
+  }, [addLine])
+
   const copyAll = useCallback(() => {
     navigator.clipboard.writeText(lines.join('\n')).catch(() => {/* ignore */})
   }, [lines])
@@ -271,11 +300,18 @@ function DebugPanel() {
         >
           {fetching ? '実行中...' : '🔑 手動でコード交換を試みる'}
         </button>
+        <button
+          onClick={showRawToken}
+          className="py-3 rounded-xl text-sm font-semibold bg-green-500/20 border border-green-500/50 text-green-300"
+        >
+          🔍 localStorageのトークンを生で表示（100文字）
+        </button>
         <button onClick={copyAll} className="py-2.5 bg-surface border border-border rounded-xl text-xs text-muted">
           全文コピー（開発者に送る）
         </button>
         <p className="text-[10px] text-muted leading-5">
-          「Withings APIテスト」→ どのmeastypeが返ってきているか確認<br />
+          「Withings APIテスト」→ APIレスポンスを確認<br />
+          「トークンを生で表示」→ access_token の長さを確認<br />
           「手動コード交換」→ Withings認証直後の ?code= を使って連携
         </p>
       </div>

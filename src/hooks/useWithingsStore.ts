@@ -134,6 +134,12 @@ export function useWithingsStore(
       })
       .then((data: CallbackJsonResponse) => {
         console.log('[useWithingsStore:init] response keys:', Object.keys(data).join(', '))
+        // ── デバッグ: コールバックで受け取ったトークン長を確認 ───────────────
+        console.log('[useWithingsStore:init] access_token  length:', data.access_token?.length  ?? 'undefined')
+        console.log('[useWithingsStore:init] refresh_token length:', data.refresh_token?.length ?? 'undefined')
+        console.log('[useWithingsStore:init] access_token  prefix:', data.access_token?.slice(0, 10))
+        // ─────────────────────────────────────────────────────────────────────
+
         if (data.error || !data.access_token || !data.refresh_token || !data.userid) {
           console.error('[useWithingsStore:init] Token exchange failed:', data.error)
           setSyncStatus('error')
@@ -147,7 +153,16 @@ export function useWithingsStore(
           userid:        data.userid,
           expires_at:    data.expires_at ?? Math.floor(Date.now() / 1000) + 10800,
         }
+
+        // ── デバッグ: 保存直前の値を確認 ────────────────────────────────────
+        console.log('[useWithingsStore:init] saving tokens. access_token length:', newTokens.access_token.length)
         saveTokens(newTokens)
+
+        // ── 保存直後に読み返して確認 ─────────────────────────────────────────
+        const savedRaw = localStorage.getItem(TOKEN_KEY)
+        const savedParsed = savedRaw ? JSON.parse(savedRaw) as WithingsTokens : null
+        console.log('[useWithingsStore:init] re-read access_token length:', savedParsed?.access_token?.length ?? 'null')
+
         localStorage.setItem(LAST_SYNC_KEY, '0')
         setTokens(newTokens)
         setSyncStatus('idle')

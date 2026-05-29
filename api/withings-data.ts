@@ -118,15 +118,14 @@ async function fetchAllMeasures(token: string): Promise<FetchResult> {
   let offset = 0
 
   for (let page = 0; page < 20; page++) {
-    // URLSearchParams はカンマを %2C にエンコードするため手動結合
-    // meastype を個別に指定（meastypes ではなく meastype）
-    const measTypeParams = Object.keys(MEAS_FIELD)
-      .map(t => `meastype=${t}`)
-      .join('&')
+    // ⚠️ URLSearchParams はカンマを %2C にエンコードするため使用しない。
+    // Withings API は meastypes=1,6,8,... のリテラルコンマ形式が正しい。
+    // 手動文字列結合でリテラルコンマを維持する。
+    const meastypesParam = Object.keys(MEAS_FIELD).join(',')   // "1,6,8,73,76,77,88,170,226,227"
 
     const url = `https://wbsapi.withings.net/v2/measure`
       + `?action=getmeas`
-      + `&${measTypeParams}`
+      + `&meastypes=${meastypesParam}`   // カンマを URL エンコードしない（リテラル）
       + `&category=1`
       + `&offset=${offset}`
       // startdate は除去（全期間取得）
