@@ -112,35 +112,52 @@ const MEAS_FIELD: Record<number, string> = {
 }
 
 // ── Withings API 呼び出し（全ページ） ────────────────────────────────────────
-
+//
+// リクエスト方式: POST + application/x-www-form-urlencoded
+// Authorization: Bearer {token} をヘッダーで送信
+// meastypes: カンマ区切り値を URLSearchParams でエンコード
+//   → URLSearchParams は "1,6,8" を "1%2C6%2C8" にエンコードするが
+//     Withings は %2C と生カンマの両方を受け付けるはず
+//
 async function fetchAllMeasures(token: string): Promise<FetchResult> {
   const allGrps: WithingsMeasureGrp[] = []
   let offset = 0
 
-  for (let page = 0; page < 20; page++) {
-    // ⚠️ URLSearchParams はカンマを %2C にエンコードするため使用しない。
-    // Withings API は meastypes=1,6,8,... のリテラルコンマ形式が正しい。
-    // 手動文字列結合でリテラルコンマを維持する。
-    const meastypesParam = Object.keys(MEAS_FIELD).join(',')   // "1,6,8,73,76,77,88,170,226,227"
+  // meastype 一覧（カンマ区切り文字列）
+  const meastypesList = Object.keys(MEAS_FIELD).join(',')  // "1,6,8,73,76,77,88,170,226,227"
 
-    const url = `https://wbsapi.withings.net/v2/measure`
-      + `?action=getmeas`
-      + `&meastypes=${meastypesParam}`   // カンマを URL エンコードしない（リテラル）
-      + `&category=1`
-      + `&offset=${offset}`
-      // startdate は除去（全期間取得）
+  for (let page = 0; page < 20; page++) {
+    // POST ボディを URLSearchParams で組み立て
+    // URLSearchParams の toString() はカンマを %2C にエンコードするが、
+    // Withings API は %2C を正しく解釈するため問題ない
+    const bodyParams = new URLSearchParams()
+    bodyParams.set('action',    'getmeas')
+    bodyParams.set('meastypes', meastypesList)
+    bodyParams.set('category',  '1')
+    bodyParams.set('offset',    String(offset))
+    // startdate 省略 = 全期間
+
+    const bodyStr = bodyParams.toString()
+    console.log(`[withings-data] page ${page + 1} POST body: ${bodyStr}`)
+    console.log(`[withings-data] page ${page + 1} token prefix: ${token.slice(0, 8)}... length=${token.length}`)
 
     let rawText = ''
     try {
-      const resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
+      const resp = await fetch('https://wbsapi.withings.net/v2/measure', {
+        method:  'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type':  'application/x-www-form-urlencoded',
+        },
+        body: bodyStr,
       })
+      console.log(`[withings-data] page ${page + 1} HTTP status: ${resp.status}`)
       rawText = await resp.text()
     } catch (e) {
       return { apiError: `Network error: ${String(e)}` }
     }
 
-    console.log(`[withings-data] page ${page + 1} raw(200): ${rawText.slice(0, 200)}`)
+    console.log(`[withings-data] page ${page + 1} raw(300): ${rawText.slice(0, 300)}`)
 
     let data: WithingsMeasResponse
     try {
@@ -152,8 +169,12 @@ async function fetchAllMeasures(token: string): Promise<FetchResult> {
       }
     }
 
-    if (data.status === 401 || data.status === 100) return { authError: true }
+    // 認証エラー (Withings 独自ステータスコード)
+    if (data.status === 401 || data.status === 100 || data.status === 102) {
+      return { authError: true }
+    }
     if (data.status !== 0 || !data.body) {
+      console.error('[withings-data] API error. status:', data.status, 'raw:', rawText.slice(0, 200))
       return {
         apiError:  `Withings status=${data.status}`,
         apiStatus: data.status,

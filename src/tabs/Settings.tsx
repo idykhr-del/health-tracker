@@ -118,9 +118,11 @@ function DebugPanel() {
       addLine(`HTTP status: ${res.status}`)
 
       const data = await res.json() as {
-        records?: Record<string, unknown>[]
-        error?:   string
-        detail?:  string
+        records?:    Record<string, unknown>[]
+        error?:      string
+        detail?:     string
+        apiStatus?:  number
+        rawSample?:  string
         debug?: {
           totalGrps:       number
           totalSessions:   number
@@ -134,7 +136,15 @@ function DebugPanel() {
 
       if (data.error) {
         addLine(`❌ error: ${data.error}`)
-        if (data.detail) addLine(`  detail: ${data.detail}`)
+        if (data.detail)    addLine(`  detail: ${String(data.detail).slice(0, 200)}`)
+        if (data.apiStatus) addLine(`  Withings status: ${data.apiStatus}`)
+        if (data.rawSample) {
+          addLine(`  rawSample:`)
+          const s = String(data.rawSample)
+          for (let i = 0; i < Math.min(s.length, 300); i += 80) {
+            addLine(`    ${s.slice(i, i + 80)}`)
+          }
+        }
         setFetching(false); return
       }
 
