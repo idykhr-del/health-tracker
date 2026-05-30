@@ -199,6 +199,14 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
       }
     }
 
+    // 各 grp の measures を全出力（type / value / unit）
+    data.body.measuregrps.forEach((grp, i) => {
+      const mStr = grp.measures
+        .map(m => `{type:${m.type},value:${m.value},unit:${m.unit}}`)
+        .join(', ')
+      console.log(`[withings-data] grp[${i}] date=${grp.date} grpid=${grp.grpid} measures=[${mStr}]`)
+    })
+
     allGrps.push(...data.body.measuregrps)
     console.log(`[withings-data] page=${page + 1}: ${data.body.measuregrps.length} grps (total ${allGrps.length})`)
 
