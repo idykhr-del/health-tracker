@@ -156,7 +156,7 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
     // startdate は省略（全期間取得）。
     const bodyStr = [
       'action=getmeas',
-      'category=1',
+      // category は除去（全カテゴリ取得）
       `offset=${offset}`,
     ].join('&')
 
@@ -208,6 +208,9 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
         rawSample:      rawText.slice(0, 300),
       }
     }
+
+    // 生レスポンスの measuregrps 全件をそのまま出力
+    console.log(`[withings-data] page=${page + 1} measuregrps(raw):`, JSON.stringify(data.body.measuregrps))
 
     allGrps.push(...data.body.measuregrps)
     console.log(`[withings-data] page=${page + 1} got ${data.body.measuregrps.length} grps (total ${allGrps.length})`)
