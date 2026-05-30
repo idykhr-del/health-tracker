@@ -4,14 +4,24 @@ import type { IncomingMessage, ServerResponse } from 'http'
  * POST /api/withings-data
  * body (JSON): { access_token: string, refresh_token?: string }
  *
- * Withings measure API（/measure, /v2/なし）から体組成データを取得する。
+ * Withings measure API から体組成データを取得する。
  *
  * リクエスト仕様:
  *   URL     : https://wbsapi.withings.net/measure
  *   Method  : POST
  *   Headers : Authorization: Bearer {token}
  *             Content-Type: application/x-www-form-urlencoded
- *   Body    : action=getmeas&category=1&meastype=1&meastype=6&...  (手動文字列)
+ *   Body    : action=getmeas&meastype=1&meastype=6&...  (手動文字列・URLSearchParams不使用)
+ *   category: 省略（全カテゴリ）
+ *   startdate: 省略（全期間）
+ *
+ * meastype マッピング:
+ *   1  → weight     (kg)
+ *   6  → bodyFatPct (%)
+ *   8  → muscleMass (kg)
+ *   76 → boneMass   (kg)
+ *   88 → visceralFat (指数)
+ *   77 → hydration   (%)
  *
  * レスポンス: { records: BodyRecord[], debug, newTokens? }
  */
@@ -63,31 +73,23 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   if (result.error) {
     return json(res, 502, {
-      error:        result.error,
+      error:          result.error,
       withingsStatus: result.withingsStatus,
-      requestBody:  result.requestBody,
-      rawSample:    result.rawSample,
+      requestBody:    result.requestBody,
+      rawSample:      result.rawSample,
     })
   }
 
   // ── ③ パース & レスポンス ──────────────────────────────────────────────────
-  const grps    = result.grps ?? []
+  const grps = result.grps ?? []
   const { records, debug } = parseGroups(grps)
 
-  // 全 meastype 一覧をログ出力
   console.log(`[withings-data] OK: records=${records.length} grps=${grps.length}`)
-  console.log(`[withings-data] 全meastypes一覧:`, JSON.stringify(debug.meastypeCounts))
-
-  // フロントエンドのデバッグパネル用: 全grpの [type, value, unit] をフラットに展開
-  // 例: [[1, 630, -1], [6, 215, -1], [8, 501, -1], ...]
-  const rawMeasureTypes: [number, number, number][] = grps.flatMap(grp =>
-    grp.measures.map(m => [m.type, m.value, m.unit] as [number, number, number])
-  )
+  console.log(`[withings-data] meastypeCounts:`, JSON.stringify(debug.meastypeCounts))
 
   return json(res, 200, {
     records,
     debug,
-    rawMeasureTypes,
     ...(newTokens ? { newTokens } : {}),
   })
 }
@@ -97,55 +99,42 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface NewTokens {
-  access_token: string
+  access_token:  string
   refresh_token: string
-  expires_at: number
+  expires_at:    number
 }
 
-interface WithingsMeasure {
-  value: number
-  type:  number
-  unit:  number
-}
-interface WithingsMeasureGrp {
-  grpid:    number
-  date:     number           // Unix timestamp (UTC)
-  measures: WithingsMeasure[]
-}
-interface WithingsMeasBody {
-  measuregrps: WithingsMeasureGrp[]
-  more:        number
-  offset:      number
-}
-interface WithingsMeasResponse {
-  status: number
-  body?:  WithingsMeasBody
-}
+interface WithingsMeasure    { value: number; type: number; unit: number }
+interface WithingsMeasureGrp { grpid: number; date: number; measures: WithingsMeasure[] }
+interface WithingsMeasBody   { measuregrps: WithingsMeasureGrp[]; more: number; offset: number }
+interface WithingsMeasResponse { status: number; body?: WithingsMeasBody }
 
 interface FetchResult {
   grps?:          WithingsMeasureGrp[]
   authError?:     boolean
   error?:         string
   withingsStatus?: number
-  requestBody?:   string    // デバッグ: 送ったボディ文字列
-  rawSample?:     string    // デバッグ: 生レスポンス先頭300文字
+  requestBody?:   string
+  rawSample?:     string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// meastype マッピング
+// meastype → フィールド名マッピング
+//   1  = weight     (体重, kg)
+//   6  = bodyFatPct (体脂肪率, %)
+//   8  = muscleMass (筋肉量, kg)
+//   76 = boneMass   (骨量, kg)
+//   88 = visceralFat (内臓脂肪指数)
+//   77 = hydration   (水分量, %)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MEAS_FIELD: Record<number, string> = {
-  1:   'weight',
-  6:   'bodyFatPct',
-  8:   'muscleMass',
-  73:  'bmi',
-  76:  'fatFreeMass',
-  77:  'hydration',
-  88:  'boneMass',
-  170: 'visceralFat',
-  226: 'bmr',
-  227: 'metabolicAge',
+  1:  'weight',
+  6:  'bodyFatPct',
+  8:  'muscleMass',
+  76: 'boneMass',
+  88: 'visceralFat',
+  77: 'hydration',
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,16 +145,14 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
   const allGrps: WithingsMeasureGrp[] = []
   let offset = 0
 
+  // meastype を "&meastype=N" 形式で手動結合
+  const measTypeParts = Object.keys(MEAS_FIELD)
+    .map(t => `meastype=${t}`)
+    .join('&')
+
   for (let page = 0; page < 20; page++) {
-    // ── ボディ文字列を手動で構築 ────────────────────────────────────────────
-    // meastype フィルターを完全に除去 → 全meastypeのデータを取得する。
-    // どのmeastype番号が返ってくるかを確認するためのデバッグ用設定。
-    // startdate は省略（全期間取得）。
-    const bodyStr = [
-      'action=getmeas',
-      // category は除去（全カテゴリ取得）
-      `offset=${offset}`,
-    ].join('&')
+    // ボディ文字列を手動構築（URLSearchParams/JSON.stringify は使わない）
+    const bodyStr = `action=getmeas&${measTypeParts}&offset=${offset}`
 
     console.log(`[withings-data] page=${page + 1} body="${bodyStr}"`)
 
@@ -188,7 +175,6 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
 
     console.log(`[withings-data] page=${page + 1} HTTP=${httpStatus} raw="${rawText.slice(0, 200)}"`)
 
-    // JSON パース
     let data: WithingsMeasResponse
     try {
       data = JSON.parse(rawText) as WithingsMeasResponse
@@ -200,13 +186,10 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
       }
     }
 
-    // 認証エラー（Withings ステータスコード）
-    const AUTH_ERRORS = new Set([100, 101, 102, 401])
-    if (AUTH_ERRORS.has(data.status)) {
+    // 認証エラー
+    if ([100, 101, 102, 401].includes(data.status)) {
       return { authError: true, requestBody: bodyStr }
     }
-
-    // その他エラー
     if (data.status !== 0 || !data.body) {
       return {
         error:          `Withings returned status=${data.status}`,
@@ -216,14 +199,8 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
       }
     }
 
-    // 各grpのmeasures配列を整形してログ出力
-    data.body.measuregrps.forEach((grp, i) => {
-      const measStr = grp.measures.map(m => `{type:${m.type},value:${m.value},unit:${m.unit}}`).join(',')
-      console.log(`[withings-data] grp[${i}]: date=${grp.date}, measures=[${measStr}]`)
-    })
-
     allGrps.push(...data.body.measuregrps)
-    console.log(`[withings-data] page=${page + 1} got ${data.body.measuregrps.length} grps (total ${allGrps.length})`)
+    console.log(`[withings-data] page=${page + 1}: ${data.body.measuregrps.length} grps (total ${allGrps.length})`)
 
     if (!data.body.more) break
     offset = data.body.offset
@@ -242,7 +219,6 @@ async function refreshAccessToken(
   refreshToken: string,
 ): Promise<NewTokens | null> {
   try {
-    // リフレッシュは /v2/oauth2 エンドポイントを使用
     const body = new URLSearchParams({
       action:        'requesttoken',
       grant_type:    'refresh_token',
@@ -273,20 +249,16 @@ async function refreshAccessToken(
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface BodyRecord {
-  id:            string
-  date:          string
-  time?:         string
-  weight:        number
-  bodyFatPct?:   number
-  muscleMass?:   number
-  fatFreeMass?:  number
-  hydration?:    number
-  boneMass?:     number
-  bmi?:          number
-  visceralFat?:  number
-  bmr?:          number
-  metabolicAge?: number
-  source:        'withings'
+  id:           string
+  date:         string
+  time?:        string
+  weight:       number
+  bodyFatPct?:  number
+  muscleMass?:  number
+  boneMass?:    number
+  visceralFat?: number
+  hydration?:   number
+  source:       'withings'
 }
 
 interface ParseResult {
@@ -303,7 +275,7 @@ interface ParseResult {
 }
 
 function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
-  // meastype 出現集計（デバッグ用）
+  // meastype 出現集計
   const meastypeCounts: Record<number, number> = {}
   for (const grp of grps) {
     for (const m of grp.measures) {
@@ -352,20 +324,16 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
   for (const s of byDate.values()) {
     if (s.fields['weight'] == null) continue  // 体重なしは除外
     records.push({
-      id:           String(s.grpid),
-      date:         s.date,
-      time:         s.time,
-      source:       'withings',
-      weight:       s.fields['weight'],
-      bodyFatPct:   s.fields['bodyFatPct'],
-      muscleMass:   s.fields['muscleMass'],
-      fatFreeMass:  s.fields['fatFreeMass'],
-      hydration:    s.fields['hydration'],
-      boneMass:     s.fields['boneMass'],
-      bmi:          s.fields['bmi'],
-      visceralFat:  s.fields['visceralFat'],
-      bmr:          s.fields['bmr'],
-      metabolicAge: s.fields['metabolicAge'],
+      id:          String(s.grpid),
+      date:        s.date,
+      time:        s.time,
+      source:      'withings',
+      weight:      s.fields['weight'],
+      bodyFatPct:  s.fields['bodyFatPct'],
+      muscleMass:  s.fields['muscleMass'],
+      boneMass:    s.fields['boneMass'],
+      visceralFat: s.fields['visceralFat'],
+      hydration:   s.fields['hydration'],
     })
   }
 
