@@ -300,12 +300,25 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
     fields: Record<string, number>
   }>()
 
-  for (const grp of grps) {
+  console.log(`[parseGroups] total grps to process: ${grps.length}`)
+
+  grps.forEach((grp, idx) => {
     // UTC → JST (+9h)
     const jstMs  = grp.date * 1000 + 9 * 3600 * 1000
     const jstIso = new Date(jstMs).toISOString()
     const date   = jstIso.slice(0, 10)   // YYYY-MM-DD
     const time   = jstIso.slice(11, 16)  // HH:MM
+
+    // 全 type を列挙（マッピング有無問わず）
+    const allTypes = grp.measures
+      .map(m => {
+        const actual = Math.round(m.value * Math.pow(10, m.unit) * 100) / 100
+        const field  = MEAS_FIELD[m.type] ?? '?'
+        return `type${m.type}(${field})=${actual}`
+      })
+      .join(', ')
+
+    console.log(`[parseGroups] grp[${idx}] grpid=${grp.grpid} date=${date} time=${time} | ${allTypes}`)
 
     const fields: Record<string, number> = {}
     for (const m of grp.measures) {
@@ -316,16 +329,20 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
     }
 
     sessions.set(grp.grpid, { grpid: grp.grpid, date, time, fields })
-  }
+  })
 
   // 同日複数セッション → フィールド数が最多のものを採用
   const byDate = new Map<string, { grpid: number; date: string; time: string; fields: Record<string, number> }>()
   for (const s of sessions.values()) {
     const existing = byDate.get(s.date)
     if (!existing || Object.keys(s.fields).length > Object.keys(existing.fields).length) {
+      if (existing) {
+        console.log(`[parseGroups] ${s.date}: grpid=${s.grpid}(${Object.keys(s.fields).length}fields) > grpid=${existing.grpid}(${Object.keys(existing.fields).length}fields) → replaced`)
+      }
       byDate.set(s.date, s)
     }
   }
+  console.log(`[parseGroups] unique dates: ${byDate.size}, sessions: ${sessions.size}`)
 
   // BodyRecord 配列に変換
   const records: BodyRecord[] = []
