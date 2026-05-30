@@ -78,9 +78,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   console.log(`[withings-data] OK: records=${records.length} grps=${grps.length}`)
   console.log(`[withings-data] 全meastypes一覧:`, JSON.stringify(debug.meastypeCounts))
 
+  // フロントエンドのデバッグパネル用: 全grpの [type, value, unit] をフラットに展開
+  // 例: [[1, 630, -1], [6, 215, -1], [8, 501, -1], ...]
+  const rawMeasureTypes: [number, number, number][] = grps.flatMap(grp =>
+    grp.measures.map(m => [m.type, m.value, m.unit] as [number, number, number])
+  )
+
   return json(res, 200, {
     records,
     debug,
+    rawMeasureTypes,
     ...(newTokens ? { newTokens } : {}),
   })
 }
@@ -209,8 +216,11 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
       }
     }
 
-    // 生レスポンスの measuregrps 全件をそのまま出力
-    console.log(`[withings-data] page=${page + 1} measuregrps(raw):`, JSON.stringify(data.body.measuregrps))
+    // 各grpのmeasures配列を整形してログ出力
+    data.body.measuregrps.forEach((grp, i) => {
+      const measStr = grp.measures.map(m => `{type:${m.type},value:${m.value},unit:${m.unit}}`).join(',')
+      console.log(`[withings-data] grp[${i}]: date=${grp.date}, measures=[${measStr}]`)
+    })
 
     allGrps.push(...data.body.measuregrps)
     console.log(`[withings-data] page=${page + 1} got ${data.body.measuregrps.length} grps (total ${allGrps.length})`)

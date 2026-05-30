@@ -118,11 +118,12 @@ function DebugPanel() {
       addLine(`HTTP status: ${res.status}`)
 
       const data = await res.json() as {
-        records?:    Record<string, unknown>[]
-        error?:      string
-        detail?:     string
-        apiStatus?:  number
-        rawSample?:  string
+        records?:          Record<string, unknown>[]
+        error?:            string
+        detail?:           string
+        apiStatus?:        number
+        rawSample?:        string
+        rawMeasureTypes?:  [number, number, number][]   // [type, value, unit][]
         debug?: {
           totalGrps:       number
           totalSessions:   number
@@ -196,6 +197,24 @@ function DebugPanel() {
             if (k !== 'source' && v !== undefined) addLine(`  ${k}: ${v}`)
           }
         }
+      }
+
+      // 生 measuregrps の type 一覧（rawMeasureTypes）を表示
+      if (data.rawMeasureTypes && data.rawMeasureTypes.length > 0) {
+        const typeMap = new Map<number, { count: number; sample: string }>()
+        for (const [type, value, unit] of data.rawMeasureTypes) {
+          const actual = Math.round(value * Math.pow(10, unit) * 100) / 100
+          if (!typeMap.has(type)) {
+            typeMap.set(type, { count: 0, sample: String(actual) })
+          }
+          typeMap.get(type)!.count++
+        }
+        addLine(`--- 生measureTypes (rawMeasureTypes: ${data.rawMeasureTypes.length}件) ---`)
+        const sortedRaw = [...typeMap.entries()].sort((a, b) => a[0] - b[0])
+        for (const [type, { count, sample }] of sortedRaw) {
+          addLine(`  type=${type}: ${count}件 (例: ${sample})`)
+        }
+        addLine(`--- end ---`)
       }
     } catch (e) {
       addLine(`❌ fetchエラー: ${e}`)
