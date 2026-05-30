@@ -154,17 +154,33 @@ function DebugPanel() {
       if (data.debug) {
         const d = data.debug
         addLine(`totalGrps: ${d.totalGrps} / totalSessions: ${d.totalSessions}`)
-        addLine(`meastypesFound: [${d.meastypesFound.join(', ')}]`)
-
+        addLine(`--- 全meastypes一覧 (meastype番号: 件数) ---`)
+        // 既知ラベル（参考）
         const LABELS: Record<number, string> = {
-          1: '体重', 6: '体脂肪率', 8: '筋肉量', 73: 'BMI',
-          76: '除脂肪体重', 77: '水分量', 88: '骨量',
-          170: '内臓脂肪', 226: '基礎代謝', 227: '代謝年齢',
+          1: '体重', 2: '身長', 4: '体温', 5: '体温?',
+          6: '体脂肪率', 7: '水分(v1)', 8: '筋肉量', 9: '水和',
+          10: '心拍', 11: '血圧(収縮)', 12: '血圧(拡張)',
+          54: 'SpO2', 71: '体温(腋窩)',
+          73: 'BMI', 76: '除脂肪体重', 77: '水分量', 88: '骨量',
+          91: '脈波伝播速度', 123: '皮膚温度',
+          135: 'QRS', 136: 'PR', 137: 'QT', 138: 'QTc', 139: 'Hb',
+          168: '筋肉量(分節)', 169: '体脂肪(分節)',
+          170: '内臓脂肪', 174: '筋肉量(体幹)',
+          175: '筋肉量(左腕)', 176: '筋肉量(右腕)',
+          177: '筋肉量(左脚)', 178: '筋肉量(右脚)',
+          195: '細胞外水分', 196: '細胞内水分',
+          226: '基礎代謝(kcal)', 227: '代謝年齢',
+          229: '内臓脂肪面積', 235: '骨格筋量',
         }
-        for (const [type, count] of Object.entries(d.meastypeCounts)) {
-          const label = LABELS[Number(type)] ?? `type${type}`
-          addLine(`  meastype${type}(${label}): ${count}件`)
+        const sortedTypes = Object.keys(d.meastypeCounts)
+          .map(Number)
+          .sort((a, b) => a - b)
+        for (const type of sortedTypes) {
+          const count = d.meastypeCounts[type]
+          const label = LABELS[type] ?? '（不明）'
+          addLine(`  meastype${type} [${label}]: ${count}件`)
         }
+        addLine(`--- end (計 ${sortedTypes.length} 種類) ---`)
 
         // 最初のレコード
         if (d.firstRecord) {

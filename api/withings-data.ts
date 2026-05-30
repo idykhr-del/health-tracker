@@ -74,7 +74,10 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const grps    = result.grps ?? []
   const { records, debug } = parseGroups(grps)
 
+  // 全 meastype 一覧をログ出力
   console.log(`[withings-data] OK: records=${records.length} grps=${grps.length}`)
+  console.log(`[withings-data] 全meastypes一覧:`, JSON.stringify(debug.meastypeCounts))
+
   return json(res, 200, {
     records,
     debug,
@@ -148,17 +151,12 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
 
   for (let page = 0; page < 20; page++) {
     // ── ボディ文字列を手動で構築 ────────────────────────────────────────────
-    // URLSearchParams / JSON.stringify は使わない。
-    // meastype= を1項目ずつ &meastype= で連結する形式。
+    // meastype フィルターを完全に除去 → 全meastypeのデータを取得する。
+    // どのmeastype番号が返ってくるかを確認するためのデバッグ用設定。
     // startdate は省略（全期間取得）。
-    const measTypeParts = Object.keys(MEAS_FIELD)
-      .map(t => `meastype=${t}`)
-      .join('&')
-
     const bodyStr = [
       'action=getmeas',
       'category=1',
-      measTypeParts,
       `offset=${offset}`,
     ].join('&')
 
