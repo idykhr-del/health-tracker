@@ -588,6 +588,17 @@ export default function Settings({
               >
                 Withingsアカウントと連携する
               </button>
+              <button
+                onClick={() => {
+                  localStorage.removeItem('withings_tokens')
+                  localStorage.removeItem('withings_last_sync')
+                  showToast('連携を解除しました。再度Withings連携ボタンから接続してください', 'info')
+                  setTimeout(() => window.location.reload(), 1200)
+                }}
+                className="w-full py-2.5 border border-red-500/60 bg-red-500/10 text-red-400 rounded-xl font-semibold text-sm"
+              >
+                Withings連携をリセット
+              </button>
               <p className="text-xs text-muted">
                 ※ developer.withings.com で Client ID / Secret を取得し、
                 Vercel 環境変数に設定してください。
