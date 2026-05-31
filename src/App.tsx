@@ -5,6 +5,7 @@ import { useToast } from './hooks/useToast'
 import { useSettings } from './hooks/useSettings'
 import { useWithingsStore } from './hooks/useWithingsStore'
 import { useHealthAutoExport, mergeBodyRecords, mergeSleepRecords } from './hooks/useHealthAutoExport'
+import { useNotionData } from './hooks/useNotionData'
 import Dashboard      from './tabs/Dashboard'
 import Charts         from './tabs/Charts'
 import Analysis       from './tabs/Analysis'
@@ -56,8 +57,11 @@ export default function App() {
   const { isBodyNotionLoading } = bodyStore
   const workoutStore = useWorkoutStore()
 
-  // ── Health Auto Export (KV) ───────────────────────────────────────────────
-  const { haeBody, haeSleep } = useHealthAutoExport()
+  // ── Health Auto Export (Upstash Redis) ───────────────────────────────────
+  const { haeBody, haeSleep, haeActivity } = useHealthAutoExport()
+
+  // ── Notion (workout + Strava) ─────────────────────────────────────────────
+  const { notionWorkouts, stravaActivities } = useNotionData()
 
   // Withings / localStorage データに HAE データをマージ（Withings 優先）
   const mergedData = useMemo(() => ({
@@ -160,6 +164,9 @@ export default function App() {
                 withingsSyncStatus={withings.syncStatus}
                 withingsLastSync={withings.lastSyncLabel}
                 onWithingsSyncNow={withings.syncNow}
+                activityRecords={haeActivity}
+                notionWorkouts={notionWorkouts}
+                stravaActivities={stravaActivities}
               />
             )}
             {t.key === 'charts' && (

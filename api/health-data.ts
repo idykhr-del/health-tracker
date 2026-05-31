@@ -1,14 +1,20 @@
 import type { IncomingMessage, ServerResponse } from 'http'
-import { kv } from '@vercel/kv'
+import { Redis } from '@upstash/redis'
 
 /**
  * GET /api/health-data
  *
- * Vercel KV に保存された Health Auto Export データを取得して返す。
- * フロントエンドが起動時に呼び出し、Withings データとマージして表示する。
+ * Upstash Redis から直近7日分の HAE データを取得して返す。
+ * フロントの useHealthAutoExport フックが起動時に呼び出す。
+ *
+ * Env vars: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
  *
  * レスポンス:
- *   { bodyRecords: BodyRecord[], sleepRecords: SleepRecord[] }
+ * {
+ *   bodyRecords:     HaeBodyRecord[]
+ *   sleepRecords:    HaeSleepRecord[]
+ *   activityRecords: HaeActivityRecord[]
+ * }
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -22,70 +28,103 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return
   }
 
+  // 直近7日の日付リスト（今日含む）
+  const dates = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    return d.toISOString().slice(0, 10)
+  })
+
   try {
-    // KV から全レコードを取得（hgetall は hash の全フィールドを返す）
-    const [rawBody, rawSleep] = await Promise.all([
-      kv.hgetall<Record<string, string>>('hae:body'),
-      kv.hgetall<Record<string, string>>('hae:sleep'),
+    const redis = Redis.fromEnv()
+
+    // 各カテゴリの key リスト → mget で一括取得
+    const bodyKeys     = dates.map(d => `hae:body:${d}`)
+    const sleepKeys    = dates.map(d => `hae:sleep:${d}`)
+    const activityKeys = dates.map(d => `hae:activity:${d}`)
+
+    const [rawBodies, rawSleeps, rawActs] = await Promise.all([
+      redis.mget<StoredBody[]>(...bodyKeys),
+      redis.mget<StoredSleep[]>(...sleepKeys),
+      redis.mget<StoredActivity[]>(...activityKeys),
     ])
 
-    const bodyRecords  = parseBodyHash(rawBody)
-    const sleepRecords = parseSleepHash(rawSleep)
+    const bodyRecords     = toBodyRecords(dates, rawBodies)
+    const sleepRecords    = toSleepRecords(dates, rawSleeps)
+    const activityRecords = toActivityRecords(dates, rawActs)
 
-    console.log(`[health-data] GET body=${bodyRecords.length} sleep=${sleepRecords.length}`)
+    console.log(`[health-data] body=${bodyRecords.length} sleep=${sleepRecords.length} activity=${activityRecords.length}`)
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ bodyRecords, sleepRecords }))
+    res.end(JSON.stringify({ bodyRecords, sleepRecords, activityRecords }))
   } catch (e) {
-    console.error('[health-data] KV error:', e)
-    // KV が未設定の場合は空配列を返す（アプリを壊さない）
+    console.error('[health-data] error:', e)
+    // KV 未設定でもアプリを壊さない
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ bodyRecords: [], sleepRecords: [], error: String(e) }))
+    res.end(JSON.stringify({ bodyRecords: [], sleepRecords: [], activityRecords: [], error: String(e) }))
   }
 }
 
-// ── 型（フロントエンドの BodyRecord / SleepRecord に合わせる） ─────────────────
+// ── Redis 保存型 ──────────────────────────────────────────────────────────────
 
-interface BodyRecord {
-  id:          string
-  date:        string
-  weight?:     number
-  bodyFatPct?: number
-  source:      'health_auto_export'
+interface StoredBody {
+  weight?:              number
+  bodyFatPct?:          number
+  leanBodyMass?:        number
+  estimatedMuscleMass?: number
+}
+interface StoredSleep {
+  totalMinutes?: number
+  deepMinutes?:  number
+  remMinutes?:   number
+}
+interface StoredActivity {
+  steps?:        number
+  heartRateAvg?: number
 }
 
-interface SleepRecord {
+// ── フロント向け型 ─────────────────────────────────────────────────────────────
+
+interface HaeBodyRecord {
+  id:                   string
+  date:                 string
+  weight?:              number
+  bodyFatPct?:          number
+  leanBodyMass?:        number
+  estimatedMuscleMass?: number
+  source:               'health_auto_export'
+}
+interface HaeSleepRecord {
   id:            string
   date:          string
-  asleepMinutes?: number
-  deepMinutes?:   number
-  remMinutes?:    number
-  lightMinutes?:  number
-  bedtime?:       string
-  waketime?:      string
-  source:         'health_auto_export'
+  totalMinutes?: number
+  deepMinutes?:  number
+  remMinutes?:   number
+  source:        'health_auto_export'
+}
+interface HaeActivityRecord {
+  date:          string
+  steps?:        number
+  heartRateAvg?: number
 }
 
 // ── パーサー ──────────────────────────────────────────────────────────────────
 
-function parseBodyHash(hash: Record<string, string> | null): BodyRecord[] {
-  if (!hash) return []
-  return Object.values(hash)
-    .map(v => {
-      try { return JSON.parse(typeof v === 'string' ? v : JSON.stringify(v)) as BodyRecord }
-      catch { return null }
-    })
-    .filter((r): r is BodyRecord => r !== null && !!r.date)
+function toBodyRecords(dates: string[], raw: (StoredBody | null)[]): HaeBodyRecord[] {
+  return raw
+    .map((v, i) => v == null ? null : { id: `hae-body-${dates[i]}`, date: dates[i], source: 'health_auto_export' as const, ...v })
+    .filter((r): r is HaeBodyRecord => r !== null)
     .sort((a, b) => a.date.localeCompare(b.date))
 }
-
-function parseSleepHash(hash: Record<string, string> | null): SleepRecord[] {
-  if (!hash) return []
-  return Object.values(hash)
-    .map(v => {
-      try { return JSON.parse(typeof v === 'string' ? v : JSON.stringify(v)) as SleepRecord }
-      catch { return null }
-    })
-    .filter((r): r is SleepRecord => r !== null && !!r.date)
+function toSleepRecords(dates: string[], raw: (StoredSleep | null)[]): HaeSleepRecord[] {
+  return raw
+    .map((v, i) => v == null ? null : { id: `hae-sleep-${dates[i]}`, date: dates[i], source: 'health_auto_export' as const, ...v })
+    .filter((r): r is HaeSleepRecord => r !== null)
+    .sort((a, b) => a.date.localeCompare(b.date))
+}
+function toActivityRecords(dates: string[], raw: (StoredActivity | null)[]): HaeActivityRecord[] {
+  return raw
+    .map((v, i) => v == null ? null : { date: dates[i], ...v })
+    .filter((r): r is HaeActivityRecord => r !== null)
     .sort((a, b) => a.date.localeCompare(b.date))
 }

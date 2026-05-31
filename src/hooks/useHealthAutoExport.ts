@@ -1,47 +1,45 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { BodyRecord, SleepRecord } from '../types'
+import type { BodyRecord, SleepRecord, HaeActivityRecord } from '../types'
 
-interface HaeData {
-  bodyRecords:  BodyRecord[]
-  sleepRecords: SleepRecord[]
+interface HaeApiResponse {
+  bodyRecords?:     Partial<BodyRecord>[]
+  sleepRecords?:    Partial<SleepRecord>[]
+  activityRecords?: HaeActivityRecord[]
+  error?:           string
 }
 
 interface UseHealthAutoExportReturn {
-  haeBody:    BodyRecord[]
-  haeSleep:   SleepRecord[]
-  haeLoading: boolean
-  haeError:   string | null
-  haeRefresh: () => void
+  haeBody:      BodyRecord[]
+  haeSleep:     SleepRecord[]
+  haeActivity:  HaeActivityRecord[]
+  haeLoading:   boolean
+  haeError:     string | null
+  haeRefresh:   () => void
 }
 
 /**
- * Vercel KV に保存された Health Auto Export データを取得するフック。
- * アプリ起動時に /api/health-data を呼び出し、bodyRecords と sleepRecords を返す。
- *
- * マージ戦略（App.tsx 側で実施）:
- *   - 同じ日付は Withings 優先（より精度が高い）
- *   - HAE のみ存在する日付は HAE データを使用
+ * Upstash Redis に保存された Health Auto Export データを取得するフック。
+ * アプリ起動時に /api/health-data を呼び出す（直近7日分）。
  */
 export function useHealthAutoExport(): UseHealthAutoExportReturn {
-  const [haeBody,    setHaeBody]    = useState<BodyRecord[]>([])
-  const [haeSleep,   setHaeSleep]   = useState<SleepRecord[]>([])
-  const [haeLoading, setHaeLoading] = useState(false)
-  const [haeError,   setHaeError]   = useState<string | null>(null)
+  const [haeBody,     setHaeBody]     = useState<BodyRecord[]>([])
+  const [haeSleep,    setHaeSleep]    = useState<SleepRecord[]>([])
+  const [haeActivity, setHaeActivity] = useState<HaeActivityRecord[]>([])
+  const [haeLoading,  setHaeLoading]  = useState(false)
+  const [haeError,    setHaeError]    = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     setHaeLoading(true)
     setHaeError(null)
     try {
       const res  = await fetch('/api/health-data')
-      const data = await res.json() as HaeData & { error?: string }
+      const data = await res.json() as HaeApiResponse
 
-      if (data.error) {
-        // KV 未設定などのエラーはアプリを壊さず静かに処理
-        console.warn('[useHealthAutoExport] API returned error:', data.error)
-      }
+      if (data.error) console.warn('[useHealthAutoExport]', data.error)
 
-      setHaeBody( (data.bodyRecords  ?? []) as BodyRecord[])
-      setHaeSleep((data.sleepRecords ?? []) as SleepRecord[])
+      setHaeBody(    (data.bodyRecords     ?? []) as BodyRecord[])
+      setHaeSleep(   (data.sleepRecords    ?? []) as SleepRecord[])
+      setHaeActivity( data.activityRecords ?? [])
     } catch (e) {
       console.warn('[useHealthAutoExport] fetch error:', e)
       setHaeError(String(e))
@@ -52,31 +50,50 @@ export function useHealthAutoExport(): UseHealthAutoExportReturn {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  return { haeBody, haeSleep, haeLoading, haeError, haeRefresh: fetchData }
+  return { haeBody, haeSleep, haeActivity, haeLoading, haeError, haeRefresh: fetchData }
 }
 
 /**
- * 2 つの BodyRecord 配列をマージする。
- * 同じ日付は primary を優先。secondary は primary にない日付のみ補完。
+ * 体組成レコードをマージする。
+ * - 同一日: primary を優先しつつ、HAE 固有フィールド (leanBodyMass 等) を補完
+ * - primary にない日付: secondary をそのまま追加
  */
 export function mergeBodyRecords(primary: BodyRecord[], secondary: BodyRecord[]): BodyRecord[] {
-  const primaryDates = new Set(primary.map(r => r.date))
-  const merged = [
-    ...primary,
-    ...secondary.filter(r => !primaryDates.has(r.date)),
-  ]
-  return merged.sort((a, b) => a.date.localeCompare(b.date))
+  const map = new Map<string, BodyRecord>(primary.map(r => [r.date, { ...r }]))
+
+  for (const sec of secondary) {
+    if (map.has(sec.date)) {
+      // Withings にない HAE 固有フィールドを補完
+      const existing = map.get(sec.date)!
+      if (existing.leanBodyMass        == null) existing.leanBodyMass        = sec.leanBodyMass
+      if (existing.estimatedMuscleMass == null) existing.estimatedMuscleMass = sec.estimatedMuscleMass
+    } else {
+      // Withings にない日付は HAE レコードをそのまま追加（weight が必須なのでチェック）
+      if (sec.weight != null) map.set(sec.date, sec)
+    }
+  }
+
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date))
 }
 
 /**
- * 2 つの SleepRecord 配列をマージする。
- * 同じ日付は primary を優先。secondary は primary にない日付のみ補完。
+ * 睡眠レコードをマージする。
+ * - 同一日: primary 優先。totalMinutes/deepMinutes/remMinutes は HAE 値で補完
+ * - primary にない日付: secondary をそのまま追加
  */
 export function mergeSleepRecords(primary: SleepRecord[], secondary: SleepRecord[]): SleepRecord[] {
-  const primaryDates = new Set(primary.map(r => r.date))
-  const merged = [
-    ...primary,
-    ...secondary.filter(r => !primaryDates.has(r.date)),
-  ]
-  return merged.sort((a, b) => a.date.localeCompare(b.date))
+  const map = new Map<string, SleepRecord>(primary.map(r => [r.date, { ...r }]))
+
+  for (const sec of secondary) {
+    if (map.has(sec.date)) {
+      const existing = map.get(sec.date)!
+      if (existing.asleepMinutes == null) existing.asleepMinutes = (sec as SleepRecord & { totalMinutes?: number }).totalMinutes ?? sec.asleepMinutes
+      if (existing.deepMinutes   == null) existing.deepMinutes   = sec.deepMinutes
+      if (existing.remMinutes    == null) existing.remMinutes    = sec.remMinutes
+    } else {
+      map.set(sec.date, sec)
+    }
+  }
+
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date))
 }

@@ -1,25 +1,28 @@
 import type { IncomingMessage, ServerResponse } from 'http'
-import { kv } from '@vercel/kv'
+import { Redis } from '@upstash/redis'
 
 /**
  * POST /api/health-webhook
  *
- * Health Auto Export アプリからの体組成・睡眠データを受け取り Vercel KV に保存する。
+ * Health Auto Export からの体組成・睡眠・活動データを Upstash Redis に保存する。
  *
- * 期待するリクエストボディ（フラット形式 or ネスト形式の両方に対応）:
- *   {
- *     weight_body_mass:      { data: [{date, qty, source}], units: "kg" }
- *     body_fat_percentage:   { data: [{date, qty, source}], units: "%" }
- *     sleep_analysis:        { data: [{date, totalSleep, deep, rem, core, sleepStart, sleepEnd}] }
- *     heart_rate:            { data: [{date, Avg, Min, Max}] }
- *   }
+ * Env vars (Upstash dashboard → REST API):
+ *   UPSTASH_REDIS_REST_URL
+ *   UPSTASH_REDIS_REST_TOKEN
  *
- * または Health Auto Export の標準ネスト形式:
- *   { data: { metrics: [{name, units, data:[...]}], sleepAnalysis: [...] } }
+ * Redis キー:
+ *   hae:body:YYYY-MM-DD     → { weight, bodyFatPct, leanBodyMass, estimatedMuscleMass }
+ *   hae:sleep:YYYY-MM-DD    → { totalMinutes, deepMinutes, remMinutes }
+ *   hae:activity:YYYY-MM-DD → { steps, heartRateAvg }
  *
- * KV キー:
- *   hae:body  (hash)  date → JSON BodyRecord
- *   hae:sleep (hash)  date → JSON SleepRecord
+ * 対応メトリクス:
+ *   weight_body_mass / body_mass      → body.weight
+ *   body_fat_percentage               → body.bodyFatPct
+ *   lean_body_mass                    → body.leanBodyMass
+ *     ↳ estimatedMuscleMass = leanBodyMass × 0.45（推定値）
+ *   sleep_analysis                    → sleep.*
+ *   step_count / steps                → activity.steps
+ *   heart_rate                        → activity.heartRateAvg
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -28,190 +31,182 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
   if (req.method !== 'POST') {
-    res.writeHead(405, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'Method not allowed' }))
-    return
+    return jsonRes(res, 405, { error: 'Method not allowed' })
   }
 
   // ── ① ボディ読み取り ──────────────────────────────────────────────────────
-  let rawBody = ''
-  try {
-    rawBody = await readBody(req)
-  } catch (e) {
-    return jsonResp(res, 400, { error: 'Failed to read body', detail: String(e) })
-  }
+  let raw = ''
+  try { raw = await readBody(req) }
+  catch (e) { return jsonRes(res, 400, { error: 'readBody failed', detail: String(e) }) }
 
   let payload: Record<string, unknown>
-  try {
-    payload = JSON.parse(rawBody) as Record<string, unknown>
-  } catch (e) {
-    console.log('[health-webhook] non-JSON body:', rawBody.slice(0, 500))
-    return jsonResp(res, 400, { error: 'Invalid JSON', detail: String(e) })
-  }
+  try { payload = JSON.parse(raw) as Record<string, unknown> }
+  catch { return jsonRes(res, 400, { error: 'Invalid JSON' }) }
 
-  console.log('[health-webhook] received keys:', Object.keys(payload).join(', '))
+  console.log('[health-webhook] keys:', Object.keys(payload).join(', '))
 
-  // ── ② データ抽出（フラット形式 / ネスト形式の両方に対応） ──────────────
-  // Health Auto Export は 2 種類のフォーマットで送ってくる可能性がある
-  let flatPayload = payload
-
-  // ネスト形式 { data: { metrics: [...], sleepAnalysis: [...] } } を展開
+  // ── ② ネスト形式の展開 ────────────────────────────────────────────────────
+  // Health Auto Export は { data: { metrics: [...], sleepAnalysis: [...] } } でも届く
   if (payload['data'] && typeof payload['data'] === 'object') {
-    const dataObj = payload['data'] as Record<string, unknown>
-    if (Array.isArray(dataObj['metrics'])) {
-      flatPayload = {}
-      for (const metric of dataObj['metrics'] as MetricEntry[]) {
-        if (metric.name) flatPayload[metric.name] = { data: metric.data, units: metric.units }
+    const d = payload['data'] as Record<string, unknown>
+    if (Array.isArray(d['metrics'])) {
+      const flat: Record<string, unknown> = {}
+      for (const m of d['metrics'] as Array<{ name: string; units?: string; data: unknown[] }>) {
+        flat[m.name] = { data: m.data, units: m.units }
       }
-      if (Array.isArray(dataObj['sleepAnalysis'])) {
-        flatPayload['sleep_analysis'] = { data: dataObj['sleepAnalysis'] }
-      }
+      if (Array.isArray(d['sleepAnalysis'])) flat['sleep_analysis'] = { data: d['sleepAnalysis'] }
+      payload = flat
     }
   }
 
-  // ── ③ 体組成データの保存 ─────────────────────────────────────────────────
-  const bodyUpdates: Record<string, string> = {}
+  // ── ③ データ抽出 ─────────────────────────────────────────────────────────
+  // body: date → StoredBody
+  const bodyMap  = new Map<string, StoredBody>()
+  const sleepMap = new Map<string, StoredSleep>()
+  const actMap   = new Map<string, StoredActivity>()
 
   // 体重
-  const weightEntries = extractQtyData(flatPayload, ['weight_body_mass', 'body_mass', 'HKQuantityTypeIdentifierBodyMass'])
-  for (const { date, qty } of weightEntries) {
-    const rec = getOrCreateBody(bodyUpdates, date)
-    rec.weight = round2(qty)
-    bodyUpdates[date] = JSON.stringify(rec)
+  for (const { date, qty } of extractQty(payload, ['weight_body_mass', 'body_mass'])) {
+    upsertBody(bodyMap, date).weight = r2(qty)
   }
-
   // 体脂肪率
-  const fatEntries = extractQtyData(flatPayload, ['body_fat_percentage', 'HKQuantityTypeIdentifierBodyFatPercentage'])
-  for (const { date, qty } of fatEntries) {
-    const rec = getOrCreateBody(bodyUpdates, date)
-    rec.bodyFatPct = round2(qty)
-    bodyUpdates[date] = JSON.stringify(rec)
+  for (const { date, qty } of extractQty(payload, ['body_fat_percentage'])) {
+    upsertBody(bodyMap, date).bodyFatPct = r2(qty)
+  }
+  // 除脂肪体重
+  for (const { date, qty } of extractQty(payload, ['lean_body_mass'])) {
+    const b = upsertBody(bodyMap, date)
+    b.leanBodyMass        = r2(qty)
+    // 推定筋肉量 = 除脂肪体重 × 0.45（推定値として保存）
+    b.estimatedMuscleMass = r2(qty * 0.45)
   }
 
-  // ── ④ 睡眠データの保存 ───────────────────────────────────────────────────
-  const sleepUpdates: Record<string, string> = {}
-
+  // 睡眠
   const sleepKey = ['sleep_analysis', 'HKCategoryTypeIdentifierSleepAnalysis']
-    .find(k => Array.isArray((flatPayload[k] as { data?: unknown })?.data))
-
+    .find(k => Array.isArray((payload[k] as Metric | undefined)?.data))
   if (sleepKey) {
-    const sleepData = ((flatPayload[sleepKey] as { data: unknown[] }).data) as SleepEntry[]
-    for (const entry of sleepData) {
-      const date = parseDate(entry.date)
+    for (const entry of (payload[sleepKey] as Metric).data as SleepEntry[]) {
+      const date = toDate(entry.date)
       if (!date) continue
-
-      const rec: StoredSleepRecord = {
-        id:            `hae-${date}`,
-        date,
-        source:        'health_auto_export',
-        asleepMinutes: toMinutes(entry.totalSleep),
-        deepMinutes:   toMinutes(entry.deep),
-        remMinutes:    toMinutes(entry.rem),
-        lightMinutes:  toMinutes(entry.core),   // "core" = light/core sleep
-        bedtime:       entry.sleepStart ?? undefined,
-        waketime:      entry.sleepEnd   ?? undefined,
-      }
-      sleepUpdates[date] = JSON.stringify(rec)
+      const s = upsertSleep(sleepMap, date)
+      s.totalMinutes = toMin(entry.totalSleep) ?? s.totalMinutes
+      s.deepMinutes  = toMin(entry.deep)       ?? s.deepMinutes
+      s.remMinutes   = toMin(entry.rem)        ?? s.remMinutes
     }
   }
 
-  // ── ⑤ KV に保存 ─────────────────────────────────────────────────────────
-  const savedBody  = Object.keys(bodyUpdates).length
-  const savedSleep = Object.keys(sleepUpdates).length
-
-  try {
-    if (savedBody  > 0) await kv.hset('hae:body',  bodyUpdates)
-    if (savedSleep > 0) await kv.hset('hae:sleep', sleepUpdates)
-    console.log(`[health-webhook] saved body=${savedBody} sleep=${savedSleep}`)
-  } catch (e) {
-    console.error('[health-webhook] KV save error:', e)
-    return jsonResp(res, 500, { error: 'KV save failed', detail: String(e) })
+  // 歩数
+  for (const { date, qty } of extractQty(payload, ['step_count', 'steps', 'HKQuantityTypeIdentifierStepCount'])) {
+    upsertAct(actMap, date).steps = Math.round(qty)
+  }
+  // 心拍数
+  const hrKey = ['heart_rate', 'HKQuantityTypeIdentifierHeartRate']
+    .find(k => Array.isArray((payload[k] as Metric | undefined)?.data))
+  if (hrKey) {
+    for (const entry of (payload[hrKey] as Metric).data as HrEntry[]) {
+      const date = toDate(entry.date)
+      if (!date || entry.Avg == null) continue
+      upsertAct(actMap, date).heartRateAvg = Math.round(entry.Avg)
+    }
   }
 
-  return jsonResp(res, 200, {
-    status:     'ok',
-    savedBody,
-    savedSleep,
-  })
+  // ── ④ Upstash Redis に保存 ────────────────────────────────────────────────
+  let redis: Redis
+  try { redis = Redis.fromEnv() }
+  catch (e) { return jsonRes(res, 500, { error: 'Redis init failed', detail: String(e) }) }
+
+  const ops: Promise<unknown>[] = []
+
+  for (const [date, v] of bodyMap)  ops.push(redis.set(`hae:body:${date}`,     JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
+  for (const [date, v] of sleepMap) ops.push(redis.set(`hae:sleep:${date}`,    JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
+  for (const [date, v] of actMap)   ops.push(redis.set(`hae:activity:${date}`, JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
+
+  try { await Promise.all(ops) }
+  catch (e) { return jsonRes(res, 500, { error: 'Redis write failed', detail: String(e) }) }
+
+  const saved = { body: bodyMap.size, sleep: sleepMap.size, activity: actMap.size }
+  console.log('[health-webhook] saved:', saved)
+  return jsonRes(res, 200, { status: 'ok', saved })
 }
 
-// ── ヘルパー型 ────────────────────────────────────────────────────────────────
+// ── 保存型 ────────────────────────────────────────────────────────────────────
 
-interface MetricEntry { name: string; units?: string; data: unknown[] }
-interface QtyEntry    { date: string; qty: number; source?: string }
-interface SleepEntry  { date: string; totalSleep?: number | string; deep?: number | string; rem?: number | string; core?: number | string; sleepStart?: string; sleepEnd?: string }
-
-interface StoredBodyRecord {
-  id:          string
-  date:        string
-  weight?:     number
-  bodyFatPct?: number
-  source:      'health_auto_export'
+interface StoredBody {
+  weight?:              number
+  bodyFatPct?:          number
+  leanBodyMass?:        number
+  estimatedMuscleMass?: number
+}
+interface StoredSleep {
+  totalMinutes?: number
+  deepMinutes?:  number
+  remMinutes?:   number
+}
+interface StoredActivity {
+  steps?:        number
+  heartRateAvg?: number
 }
 
-interface StoredSleepRecord {
-  id:            string
-  date:          string
-  asleepMinutes?: number
-  deepMinutes?:   number
-  remMinutes?:    number
-  lightMinutes?:  number
-  bedtime?:       string
-  waketime?:      string
-  source:         'health_auto_export'
-}
+// ── 受信データ型 ──────────────────────────────────────────────────────────────
+
+interface Metric    { data: unknown[]; units?: string }
+interface QtyEntry  { date: string; qty: number }
+interface SleepEntry { date: string; totalSleep?: number | string; deep?: number | string; rem?: number | string }
+interface HrEntry    { date: string; Avg?: number }
 
 // ── ユーティリティ ────────────────────────────────────────────────────────────
 
-function getOrCreateBody(map: Record<string, string>, date: string): StoredBodyRecord {
-  if (map[date]) return JSON.parse(map[date]) as StoredBodyRecord
-  return { id: `hae-${date}`, date, source: 'health_auto_export' }
+function upsertBody(m: Map<string, StoredBody>, date: string): StoredBody {
+  if (!m.has(date)) m.set(date, {})
+  return m.get(date)!
+}
+function upsertSleep(m: Map<string, StoredSleep>, date: string): StoredSleep {
+  if (!m.has(date)) m.set(date, {})
+  return m.get(date)!
+}
+function upsertAct(m: Map<string, StoredActivity>, date: string): StoredActivity {
+  if (!m.has(date)) m.set(date, {})
+  return m.get(date)!
 }
 
-function extractQtyData(
-  payload: Record<string, unknown>,
-  keys: string[],
-): QtyEntry[] {
+function extractQty(payload: Record<string, unknown>, keys: string[]): QtyEntry[] {
   for (const key of keys) {
     const val = payload[key]
-    if (val && typeof val === 'object' && Array.isArray((val as { data?: unknown }).data)) {
-      return ((val as { data: unknown[] }).data as QtyEntry[])
-        .filter(e => e && typeof e.qty === 'number' && e.date)
+    if (val && typeof val === 'object' && Array.isArray((val as Metric).data)) {
+      return (val as Metric).data
+        .filter((e): e is QtyEntry => !!e && typeof (e as QtyEntry).qty === 'number' && !!(e as QtyEntry).date)
     }
   }
   return []
 }
 
-/** "2026-05-30 08:00:00 +0900" | "2026-05-30T08:00:00+09:00" → "2026-05-30" */
-function parseDate(raw: string): string | null {
+/** "2026-05-30 08:00:00 +0900" | ISO → "YYYY-MM-DD" */
+function toDate(raw: string): string | null {
   if (!raw) return null
   const m = raw.match(/^(\d{4}-\d{2}-\d{2})/)
   return m ? m[1] : null
 }
 
-/** 時間（時間数 or 秒数）→ 分 */
-function toMinutes(val?: number | string): number | undefined {
-  if (val == null) return undefined
-  const n = typeof val === 'string' ? parseFloat(val) : val
+/** 時間数 or 秒数 → 分 */
+function toMin(v?: number | string): number | undefined {
+  if (v == null) return undefined
+  const n = typeof v === 'string' ? parseFloat(v) : v
   if (isNaN(n)) return undefined
-  // Withings は秒、Health Auto Export は時間単位が多い
-  return n > 1000 ? Math.round(n / 60) : Math.round(n * 60)
+  return n > 1000 ? Math.round(n / 60) : Math.round(n * 60) // 秒 → 分 or 時間 → 分
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
-}
+function r2(n: number) { return Math.round(n * 100) / 100 }
 
-function jsonResp(res: ServerResponse, status: number, body: object) {
+function jsonRes(res: ServerResponse, status: number, body: object) {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = ''
-    req.on('data', (chunk: Buffer) => { data += chunk.toString() })
-    req.on('end',  () => resolve(data))
+    let d = ''
+    req.on('data', (c: Buffer) => { d += c.toString() })
+    req.on('end',  () => resolve(d))
     req.on('error', reject)
   })
 }

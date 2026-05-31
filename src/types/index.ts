@@ -10,10 +10,32 @@ export interface BodyRecord {
   bmi?: number
   fatFreeMass?: number
   bodyFatPct?: number
-  visceralFat?: number   // 内臓脂肪指数 (meastype 170)
-  bmr?: number           // 基礎代謝率 kcal (meastype 226)
-  metabolicAge?: number  // 代謝年齢 (meastype 227)
+  visceralFat?: number       // 内臓脂肪指数 (meastype 170)
+  bmr?: number               // 基礎代謝率 kcal (meastype 226)
+  metabolicAge?: number      // 代謝年齢 (meastype 227)
+  leanBodyMass?: number      // 除脂肪体重 (HAE lean_body_mass)
+  estimatedMuscleMass?: number // 推定筋肉量 = leanBodyMass × 0.45（推定値）
   source: 'withings_csv' | 'withings' | 'health_auto_export' | 'manual'
+}
+
+// ── Health Auto Export 専用型 ─────────────────────────────────────────────────
+
+/** HAE から取得する活動データ（体組成・睡眠には含まれない） */
+export interface HaeActivityRecord {
+  date:          string
+  steps?:        number
+  heartRateAvg?: number
+}
+
+// ── Notion トレーニング型 ─────────────────────────────────────────────────────
+
+export interface NotionWorkout {
+  id:               string
+  date:             string
+  name:             string
+  type:             'strength' | 'running' | 'walking' | 'cycling' | 'other'
+  distanceKm?:      number
+  durationMinutes?: number
 }
 
 export interface SleepRecord {
