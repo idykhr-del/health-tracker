@@ -203,10 +203,12 @@ function extractQty(payload: Record<string, unknown>, keys: string[]): QtyEntry[
         .map(e => {
           if (!e || typeof e !== 'object') return null
           const entry = e as Record<string, unknown>
-          const date = entry['date'] as string | undefined
+          const rawDate = entry['date'] as string | undefined
+          // "2026-05-25 08:04:00 +0900" → "2026-05-25" に正規化
+          const date = rawDate ? (rawDate.match(/^(\d{4}-\d{2}-\d{2})/) ?? [])[1] : undefined
           // qty は数値 or 数値文字列 どちらも受け付ける
-          const raw = entry['qty'] ?? entry['value']
-          const qty = typeof raw === 'number' ? raw : typeof raw === 'string' ? parseFloat(raw) : NaN
+          const rawQty = entry['qty'] ?? entry['value']
+          const qty = typeof rawQty === 'number' ? rawQty : typeof rawQty === 'string' ? parseFloat(rawQty) : NaN
           if (!date || isNaN(qty)) return null
           return { date, qty } as QtyEntry
         })
