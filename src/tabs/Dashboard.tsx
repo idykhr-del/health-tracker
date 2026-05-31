@@ -197,7 +197,7 @@ export default function Dashboard({
         )}
 
         {/* ── 今日の活動 ───────────────────────────────────────────────── */}
-        {todayActivity && (todayActivity.steps != null || todayActivity.heartRateAvg != null) && (
+        {todayActivity && (todayActivity.steps != null || todayActivity.restingHeartRate != null) && (
           <section>
             <h2 className="text-xs text-muted uppercase tracking-wider mb-2">
               今日の活動 <span className="text-muted normal-case">({todayActivity.date})</span>
