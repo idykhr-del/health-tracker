@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useBodyStore } from './hooks/useBodyStore'
 import { useWorkoutStore } from './hooks/useWorkoutStore'
 import { useToast } from './hooks/useToast'
 import { useSettings } from './hooks/useSettings'
 import { useWithingsStore } from './hooks/useWithingsStore'
+import { useHealthAutoExport, mergeBodyRecords, mergeSleepRecords } from './hooks/useHealthAutoExport'
 import Dashboard      from './tabs/Dashboard'
 import Charts         from './tabs/Charts'
 import Analysis       from './tabs/Analysis'
@@ -54,6 +55,16 @@ export default function App() {
   const bodyStore    = useBodyStore()
   const { isBodyNotionLoading } = bodyStore
   const workoutStore = useWorkoutStore()
+
+  // ── Health Auto Export (KV) ───────────────────────────────────────────────
+  const { haeBody, haeSleep } = useHealthAutoExport()
+
+  // Withings / localStorage データに HAE データをマージ（Withings 優先）
+  const mergedData = useMemo(() => ({
+    ...bodyStore.data,
+    bodyRecords:  mergeBodyRecords(bodyStore.data.bodyRecords,  haeBody),
+    sleepRecords: mergeSleepRecords(bodyStore.data.sleepRecords, haeSleep),
+  }), [bodyStore.data, haeBody, haeSleep])
   const { toasts, showToast, dismissToast } = useToast()
   const { settings, addImportHistory, clearHistory } = useSettings()
 
@@ -143,7 +154,7 @@ export default function App() {
           >
             {t.key === 'dashboard' && (
               <Dashboard
-                data={bodyStore.data}
+                data={mergedData}
                 sessions={workoutStore.sessions}
                 onNavigateToData={() => setTab('data')}
                 withingsSyncStatus={withings.syncStatus}
@@ -153,14 +164,14 @@ export default function App() {
             )}
             {t.key === 'charts' && (
               <Charts
-                data={bodyStore.data}
+                data={mergedData}
                 sessions={workoutStore.sessions}
                 onNavigateToData={() => setTab('data')}
               />
             )}
             {t.key === 'analysis' && (
               <Analysis
-                data={bodyStore.data}
+                data={mergedData}
                 sessions={workoutStore.sessions}
                 onNavigateToData={() => setTab('data')}
               />
@@ -184,8 +195,8 @@ export default function App() {
               <Settings
                 goals={bodyStore.data.goals}
                 settings={settings}
-                bodyRecords={bodyStore.data.bodyRecords}
-                sleepRecords={bodyStore.data.sleepRecords}
+                bodyRecords={mergedData.bodyRecords}
+                sleepRecords={mergedData.sleepRecords}
                 autoSleepLastImport={bodyStore.autoSleepLastImport}
                 onUpdateGoals={bodyStore.updateGoals}
                 onResetBody={bodyStore.resetBodyData}

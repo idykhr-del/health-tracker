@@ -13,7 +13,7 @@ export interface BodyRecord {
   visceralFat?: number   // 内臓脂肪指数 (meastype 170)
   bmr?: number           // 基礎代謝率 kcal (meastype 226)
   metabolicAge?: number  // 代謝年齢 (meastype 227)
-  source: 'withings_csv' | 'manual'
+  source: 'withings_csv' | 'withings' | 'health_auto_export' | 'manual'
 }
 
 export interface SleepRecord {
