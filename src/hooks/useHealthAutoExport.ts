@@ -65,6 +65,7 @@ export function mergeBodyRecords(primary: BodyRecord[], secondary: BodyRecord[])
     if (map.has(sec.date)) {
       // Withings にない HAE 固有フィールドを補完
       const existing = map.get(sec.date)!
+      if (existing.bodyFatPct          == null) existing.bodyFatPct          = sec.bodyFatPct
       if (existing.leanBodyMass        == null) existing.leanBodyMass        = sec.leanBodyMass
       if (existing.estimatedMuscleMass == null) existing.estimatedMuscleMass = sec.estimatedMuscleMass
     } else {
@@ -85,13 +86,20 @@ export function mergeSleepRecords(primary: SleepRecord[], secondary: SleepRecord
   const map = new Map<string, SleepRecord>(primary.map(r => [r.date, { ...r }]))
 
   for (const sec of secondary) {
+    const haeRec = sec as SleepRecord & { totalMinutes?: number }
     if (map.has(sec.date)) {
+      // Withings レコードに HAE 値で不足フィールドを補完
       const existing = map.get(sec.date)!
-      if (existing.asleepMinutes == null) existing.asleepMinutes = (sec as SleepRecord & { totalMinutes?: number }).totalMinutes ?? sec.asleepMinutes
+      if (existing.asleepMinutes == null) existing.asleepMinutes = haeRec.totalMinutes ?? sec.asleepMinutes
       if (existing.deepMinutes   == null) existing.deepMinutes   = sec.deepMinutes
       if (existing.remMinutes    == null) existing.remMinutes    = sec.remMinutes
     } else {
-      map.set(sec.date, sec)
+      // Withings にない日付: totalMinutes → asleepMinutes にマップして追加
+      const mapped: SleepRecord = {
+        ...sec,
+        asleepMinutes: haeRec.totalMinutes ?? sec.asleepMinutes,
+      }
+      map.set(sec.date, mapped)
     }
   }
 

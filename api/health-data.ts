@@ -82,8 +82,8 @@ interface StoredSleep {
   remMinutes?:   number
 }
 interface StoredActivity {
-  steps?:        number
-  heartRateAvg?: number
+  steps?:            number
+  restingHeartRate?: number
 }
 
 // ── フロント向け型 ─────────────────────────────────────────────────────────────
@@ -106,9 +106,9 @@ interface HaeSleepRecord {
   source:        'health_auto_export'
 }
 interface HaeActivityRecord {
-  date:          string
-  steps?:        number
-  heartRateAvg?: number
+  date:              string
+  steps?:            number
+  restingHeartRate?: number
 }
 
 // ── パーサー ──────────────────────────────────────────────────────────────────

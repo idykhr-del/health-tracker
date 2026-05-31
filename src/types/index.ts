@@ -22,9 +22,9 @@ export interface BodyRecord {
 
 /** HAE から取得する活動データ（体組成・睡眠には含まれない） */
 export interface HaeActivityRecord {
-  date:          string
-  steps?:        number
-  heartRateAvg?: number
+  date:              string
+  steps?:            number
+  restingHeartRate?: number
 }
 
 // ── Notion トレーニング型 ─────────────────────────────────────────────────────

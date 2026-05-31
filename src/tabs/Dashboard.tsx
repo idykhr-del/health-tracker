@@ -203,8 +203,8 @@ export default function Dashboard({
               今日の活動 <span className="text-muted normal-case">({todayActivity.date})</span>
             </h2>
             <div className="grid grid-cols-3 gap-2">
-              <SummaryCard label="歩数"   value={todayActivity.steps?.toLocaleString() ?? '—'} unit="歩" />
-              <SummaryCard label="心拍数" value={todayActivity.heartRateAvg ?? '—'} unit="bpm" />
+              <SummaryCard label="歩数"         value={todayActivity.steps?.toLocaleString() ?? '—'} unit="歩" />
+              <SummaryCard label="安静時心拍数" value={todayActivity.restingHeartRate ?? '—'} unit="bpm" />
               <div />
             </div>
           </section>

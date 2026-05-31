@@ -95,19 +95,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     }
   }
 
-  // 歩数
+  // 歩数（同日に複数エントリがある場合は合算）
   for (const { date, qty } of extractQty(payload, ['step_count', 'steps', 'HKQuantityTypeIdentifierStepCount'])) {
-    upsertAct(actMap, date).steps = Math.round(qty)
+    const act = upsertAct(actMap, date)
+    act.steps = (act.steps ?? 0) + Math.round(qty)
   }
-  // 心拍数
-  const hrKey = ['heart_rate', 'HKQuantityTypeIdentifierHeartRate']
-    .find(k => Array.isArray((payload[k] as Metric | undefined)?.data))
-  if (hrKey) {
-    for (const entry of (payload[hrKey] as Metric).data as HrEntry[]) {
-      const date = toDate(entry.date)
-      if (!date || entry.Avg == null) continue
-      upsertAct(actMap, date).heartRateAvg = Math.round(entry.Avg)
-    }
+  // 安静時心拍数（resting_heart_rate: 1日1値）
+  for (const { date, qty } of extractQty(payload, ['resting_heart_rate', 'HKQuantityTypeIdentifierRestingHeartRate'])) {
+    upsertAct(actMap, date).restingHeartRate = Math.round(qty)
   }
 
   // ── ④ Upstash Redis に保存 ────────────────────────────────────────────────
@@ -148,8 +143,8 @@ interface StoredSleep {
   remMinutes?:   number
 }
 interface StoredActivity {
-  steps?:        number
-  heartRateAvg?: number
+  steps?:            number
+  restingHeartRate?: number
 }
 
 // ── 受信データ型 ──────────────────────────────────────────────────────────────
@@ -157,7 +152,6 @@ interface StoredActivity {
 interface Metric    { data: unknown[]; units?: string }
 interface QtyEntry  { date: string; qty: number }
 interface SleepEntry { date: string; totalSleep?: number | string; deep?: number | string; rem?: number | string }
-interface HrEntry    { date: string; Avg?: number }
 
 // ── ユーティリティ ────────────────────────────────────────────────────────────
 
@@ -179,7 +173,17 @@ function extractQty(payload: Record<string, unknown>, keys: string[]): QtyEntry[
     const val = payload[key]
     if (val && typeof val === 'object' && Array.isArray((val as Metric).data)) {
       return (val as Metric).data
-        .filter((e): e is QtyEntry => !!e && typeof (e as QtyEntry).qty === 'number' && !!(e as QtyEntry).date)
+        .map(e => {
+          if (!e || typeof e !== 'object') return null
+          const entry = e as Record<string, unknown>
+          const date = entry['date'] as string | undefined
+          // qty は数値 or 数値文字列 どちらも受け付ける
+          const raw = entry['qty'] ?? entry['value']
+          const qty = typeof raw === 'number' ? raw : typeof raw === 'string' ? parseFloat(raw) : NaN
+          if (!date || isNaN(qty)) return null
+          return { date, qty } as QtyEntry
+        })
+        .filter((e): e is QtyEntry => e !== null)
     }
   }
   return []
