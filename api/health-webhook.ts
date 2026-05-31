@@ -43,7 +43,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try { payload = JSON.parse(raw) as Record<string, unknown> }
   catch { return jsonRes(res, 400, { error: 'Invalid JSON' }) }
 
-  console.log('[health-webhook] keys:', Object.keys(payload).join(', '))
+  console.log('[health-webhook] TOP-LEVEL keys:', Object.keys(payload).join(', '))
 
   // ── ② ネスト形式の展開 ────────────────────────────────────────────────────
   // Health Auto Export は { data: { metrics: [...], sleepAnalysis: [...] } } でも届く
@@ -57,6 +57,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       if (Array.isArray(d['sleepAnalysis'])) flat['sleep_analysis'] = { data: d['sleepAnalysis'] }
       payload = flat
     }
+  }
+
+  // 展開後のキー一覧（ネスト形式なら展開後）
+  console.log('[health-webhook] FLAT keys:', Object.keys(payload).join(', '))
+  // body_fat_percentage の生データを確認
+  const bfpRaw = payload['body_fat_percentage']
+  if (bfpRaw && typeof bfpRaw === 'object' && Array.isArray((bfpRaw as { data?: unknown[] }).data)) {
+    const bfpData = (bfpRaw as { data: unknown[] }).data
+    console.log('[health-webhook] body_fat_percentage entries:', bfpData.length,
+      'first:', JSON.stringify(bfpData[0] ?? null))
+  } else {
+    console.log('[health-webhook] body_fat_percentage: NOT FOUND or no data array')
   }
 
   // ── ③ データ抽出 ─────────────────────────────────────────────────────────
@@ -117,9 +129,24 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   const ops: Promise<unknown>[] = []
 
-  for (const [date, v] of bodyMap)  ops.push(redis.set(`hae:body:${date}`,     JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
-  for (const [date, v] of sleepMap) ops.push(redis.set(`hae:sleep:${date}`,    JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
-  for (const [date, v] of actMap)   ops.push(redis.set(`hae:activity:${date}`, JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
+  // デバッグ: 保存するbodyデータの内容を全件出力
+  console.log('[health-webhook] bodyMap size:', bodyMap.size)
+  for (const [date, v] of bodyMap) {
+    console.log(`[health-webhook] SAVE hae:body:${date} =`, JSON.stringify(v))
+    ops.push(redis.set(`hae:body:${date}`, JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
+  }
+  // デバッグ: sleepデータの内容を全件出力
+  console.log('[health-webhook] sleepMap size:', sleepMap.size)
+  for (const [date, v] of sleepMap) {
+    console.log(`[health-webhook] SAVE hae:sleep:${date} =`, JSON.stringify(v))
+    ops.push(redis.set(`hae:sleep:${date}`, JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
+  }
+  // デバッグ: activityデータの内容を全件出力
+  console.log('[health-webhook] actMap size:', actMap.size)
+  for (const [date, v] of actMap) {
+    console.log(`[health-webhook] SAVE hae:activity:${date} =`, JSON.stringify(v))
+    ops.push(redis.set(`hae:activity:${date}`, JSON.stringify(v), { ex: 60 * 60 * 24 * 365 }))
+  }
 
   try { await Promise.all(ops) }
   catch (e) { return jsonRes(res, 500, { error: 'Redis write failed', detail: String(e) }) }

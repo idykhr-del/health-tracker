@@ -37,6 +37,13 @@ export function useHealthAutoExport(): UseHealthAutoExportReturn {
 
       if (data.error) console.warn('[useHealthAutoExport]', data.error)
 
+      // デバッグ: APIから受け取ったbodyRecordsのbodyFatPctを確認
+      console.log('[useHealthAutoExport] bodyRecords count:', (data.bodyRecords ?? []).length)
+      ;(data.bodyRecords ?? []).forEach((r: Partial<BodyRecord>) => {
+        console.log(`[useHealthAutoExport] body ${r.date}: weight=${r.weight} bodyFatPct=${r.bodyFatPct} leanBodyMass=${r.leanBodyMass}`)
+      })
+      console.log('[useHealthAutoExport] activityRecords:', JSON.stringify(data.activityRecords ?? []))
+
       setHaeBody(    (data.bodyRecords     ?? []) as BodyRecord[])
       setHaeSleep(   (data.sleepRecords    ?? []) as SleepRecord[])
       setHaeActivity( data.activityRecords ?? [])

@@ -52,10 +52,27 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       redis.mget<StoredActivity[]>(...activityKeys),
     ])
 
+    // デバッグ: Redisから取得した生データを全件出力
+    console.log('[health-data] dates queried:', dates.join(', '))
+    rawBodies.forEach((v, i) => {
+      if (v !== null) console.log(`[health-data] RAW hae:body:${dates[i]} =`, JSON.stringify(v))
+      else            console.log(`[health-data] RAW hae:body:${dates[i]} = null (no data)`)
+    })
+    rawSleeps.forEach((v, i) => {
+      if (v !== null) console.log(`[health-data] RAW hae:sleep:${dates[i]} =`, JSON.stringify(v))
+    })
+    rawActs.forEach((v, i) => {
+      if (v !== null) console.log(`[health-data] RAW hae:activity:${dates[i]} =`, JSON.stringify(v))
+    })
+
     const bodyRecords     = toBodyRecords(dates, rawBodies)
     const sleepRecords    = toSleepRecords(dates, rawSleeps)
     const activityRecords = toActivityRecords(dates, rawActs)
 
+    // デバッグ: 変換後のbodyRecordsのbodyFatPctを確認
+    bodyRecords.forEach(r => {
+      console.log(`[health-data] bodyRecord ${r.date}: weight=${r.weight} bodyFatPct=${r.bodyFatPct} leanBodyMass=${r.leanBodyMass} estimatedMuscleMass=${r.estimatedMuscleMass}`)
+    })
     console.log(`[health-data] body=${bodyRecords.length} sleep=${sleepRecords.length} activity=${activityRecords.length}`)
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
