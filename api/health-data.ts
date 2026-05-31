@@ -7,7 +7,7 @@ import { Redis } from '@upstash/redis'
  * Upstash Redis から直近7日分の HAE データを取得して返す。
  * フロントの useHealthAutoExport フックが起動時に呼び出す。
  *
- * Env vars: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
+ * Env vars: KV_REST_API_URL, KV_REST_API_TOKEN
  *
  * レスポンス:
  * {
@@ -36,7 +36,10 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   })
 
   try {
-    const redis = Redis.fromEnv()
+    const redisUrl   = process.env['KV_REST_API_URL']
+    const redisToken = process.env['KV_REST_API_TOKEN']
+    if (!redisUrl || !redisToken) throw new Error('KV_REST_API_URL / KV_REST_API_TOKEN not set')
+    const redis = new Redis({ url: redisUrl, token: redisToken })
 
     // 各カテゴリの key リスト → mget で一括取得
     const bodyKeys     = dates.map(d => `hae:body:${d}`)

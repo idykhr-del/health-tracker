@@ -6,9 +6,9 @@ import { Redis } from '@upstash/redis'
  *
  * Health Auto Export からの体組成・睡眠・活動データを Upstash Redis に保存する。
  *
- * Env vars (Upstash dashboard → REST API):
- *   UPSTASH_REDIS_REST_URL
- *   UPSTASH_REDIS_REST_TOKEN
+ * Env vars (Vercel KV / Upstash):
+ *   KV_REST_API_URL
+ *   KV_REST_API_TOKEN
  *
  * Redis キー:
  *   hae:body:YYYY-MM-DD     → { weight, bodyFatPct, leanBodyMass, estimatedMuscleMass }
@@ -111,8 +111,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   // ── ④ Upstash Redis に保存 ────────────────────────────────────────────────
+  const redisUrl   = process.env['KV_REST_API_URL']
+  const redisToken = process.env['KV_REST_API_TOKEN']
+  if (!redisUrl || !redisToken) {
+    return jsonRes(res, 500, { error: 'Redis env vars not set (KV_REST_API_URL / KV_REST_API_TOKEN)' })
+  }
   let redis: Redis
-  try { redis = Redis.fromEnv() }
+  try { redis = new Redis({ url: redisUrl, token: redisToken }) }
   catch (e) { return jsonRes(res, 500, { error: 'Redis init failed', detail: String(e) }) }
 
   const ops: Promise<unknown>[] = []
