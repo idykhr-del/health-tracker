@@ -4,16 +4,20 @@ export default {
   theme: {
     extend: {
       colors: {
-        bg:          '#0f0f1a',
-        surface:     '#1a1a2e',
-        card:        '#16213e',
-        accent:      '#00d4ff',
-        accentDark:  '#0099bb',
-        accentGreen: '#39ff14',
-        accentPurple:'#a855f7',
-        accentOrange:'#f97316',
-        muted:       '#8892a4',
-        border:      '#2a2a4a',
+        bg:          '#F0F2F5',   // ライトグレー背景
+        surface:     '#FFFFFF',   // ホワイトサーフェス（ヘッダー・ナビ）
+        card:        '#FFFFFF',   // ホワイトカード
+        foreground:  '#1A1A1A',  // メインテキスト（ダークグレー）
+        accent:      '#0EA5E9',  // スカイブルー（白背景で視認性◎）
+        accentDark:  '#0284C7',
+        accentGreen: '#16A34A',  // グリーン（白背景対応）
+        accentPurple:'#9333EA',  // パープル
+        accentOrange:'#EA580C',  // オレンジ
+        muted:       '#6B7280',  // グレーテキスト
+        border:      '#E5E7EB',  // ライトボーダー
+      },
+      boxShadow: {
+        card: '0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.06)',
       },
     },
   },

@@ -8,13 +8,13 @@ interface Props {
 }
 
 export default function SummaryCard({ label, value, unit = '', change, changeUnit = '', highlight }: Props) {
-  const changeColor = change == null ? '' : change > 0 ? 'text-red-400' : change < 0 ? 'text-accentGreen' : 'text-muted'
+  const changeColor = change == null ? '' : change > 0 ? 'text-red-500' : change < 0 ? 'text-accentGreen' : 'text-muted'
 
   return (
-    <div className={`rounded-xl p-4 flex flex-col gap-1 ${highlight ? 'bg-accent/10 border border-accent/30' : 'bg-card'}`}>
+    <div className={`rounded-xl p-4 flex flex-col gap-1 shadow-card ${highlight ? 'bg-accent/10 border border-accent/30' : 'bg-card'}`}>
       <span className="text-xs text-muted">{label}</span>
       <div className="flex items-end gap-1">
-        <span className="text-2xl font-bold text-white">
+        <span className="text-2xl font-bold text-foreground">
           {value ?? '—'}
         </span>
         {value != null && unit && <span className="text-sm text-muted mb-0.5">{unit}</span>}

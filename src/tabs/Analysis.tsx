@@ -77,7 +77,7 @@ export default function Analysis({ data, sessions, onNavigateToData }: Props) {
 
         {/* Claude.ai export section */}
         <section className="bg-gradient-to-br from-accent/10 to-accentPurple/10 border border-accent/20 rounded-xl p-4">
-          <h2 className="text-sm font-semibold text-white mb-1">Claude.ai で詳細分析</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-1">Claude.ai で詳細分析</h2>
           <p className="text-xs text-muted mb-3">
             90日分の全データ＋分析プロンプトをクリップボードにコピーして、
             Claude.aiに貼り付けるだけで高度な分析が受けられます。
@@ -94,7 +94,7 @@ export default function Analysis({ data, sessions, onNavigateToData }: Props) {
               href="https://claude.ai"
               target="_blank"
               rel="noopener noreferrer"
-              className="px-4 py-2.5 rounded-xl bg-surface border border-border text-white text-sm font-semibold flex items-center"
+              className="px-4 py-2.5 rounded-xl bg-surface border border-border text-foreground text-sm font-semibold flex items-center"
             >
               Claude.ai →
             </a>
@@ -222,7 +222,7 @@ export default function Analysis({ data, sessions, onNavigateToData }: Props) {
                   {exerciseRank.map((ex, i) => (
                     <tr key={ex.name} className="border-b border-border last:border-0">
                       <td className="py-2 px-3 text-muted">{i + 1}</td>
-                      <td className="py-2 px-2 text-white font-medium">{ex.name}</td>
+                      <td className="py-2 px-2 text-foreground font-medium">{ex.name}</td>
                       <td className="py-2 px-2 text-muted">{ex.category}</td>
                       <td className={`py-2 px-3 text-right font-medium ${
                         ex.muscleChange > 0 ? 'text-accentGreen' :

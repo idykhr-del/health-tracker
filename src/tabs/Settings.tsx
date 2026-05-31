@@ -431,7 +431,7 @@ export default function Settings({
 
         {/* ── Notion連携 ──────────────────────────────────────────────────── */}
         <section>
-          <h2 className="text-sm font-semibold text-white mb-1">Notion 連携</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-1">Notion 連携</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
 
             {/* 同期状態 */}
@@ -440,7 +440,7 @@ export default function Settings({
                 <>
                   <span className="text-accent animate-pulse">⏳</span>
                   <div>
-                    <p className="text-sm text-white font-medium">Notionから読み込み中…</p>
+                    <p className="text-sm text-foreground font-medium">Notionから読み込み中…</p>
                     <p className="text-xs text-muted">初回起動時はしばらくお待ちください</p>
                   </div>
                 </>
@@ -448,7 +448,7 @@ export default function Settings({
                 <>
                   <span className="text-accentGreen text-lg">✅</span>
                   <div>
-                    <p className="text-sm text-white font-medium">Notion同期 有効</p>
+                    <p className="text-sm text-foreground font-medium">Notion同期 有効</p>
                     <p className="text-xs text-muted">
                       体組成データはNotion DBと自動同期されます
                     </p>
@@ -458,7 +458,7 @@ export default function Settings({
                 <>
                   <span className="text-accentOrange text-lg">☁️</span>
                   <div>
-                    <p className="text-sm text-white font-medium">Notion連携</p>
+                    <p className="text-sm text-foreground font-medium">Notion連携</p>
                     <p className="text-xs text-muted">
                       body_records DBと自動同期します。初回はデータを移行してください。
                     </p>
@@ -527,14 +527,14 @@ export default function Settings({
 
         {/* ── Withings連携 ────────────────────────────────────────────────── */}
         <section>
-          <h2 className="text-sm font-semibold text-white mb-1">Withings 連携</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-1">Withings 連携</h2>
 
           {withingsConnected ? (
             <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
               <div className="flex items-center gap-2">
                 <span className="text-accentGreen text-lg">✅</span>
                 <div>
-                  <p className="text-sm text-white font-medium">連携済み</p>
+                  <p className="text-sm text-foreground font-medium">連携済み</p>
                   {withingsLastSync && (
                     <p className="text-xs text-muted">最終同期: {withingsLastSync}</p>
                   )}
@@ -576,7 +576,7 @@ export default function Settings({
               <div className="flex items-center gap-2">
                 <span className="text-accentOrange text-lg">⚠️</span>
                 <div>
-                  <p className="text-sm text-white font-medium">未連携</p>
+                  <p className="text-sm text-foreground font-medium">未連携</p>
                   <p className="text-xs text-muted">
                     Withings Body SmartのデータをAPI経由で自動取得します。
                   </p>
@@ -609,7 +609,7 @@ export default function Settings({
 
         {/* ── workout-tracker 連携 ─────────────────────────────────────────── */}
         <section>
-          <h2 className="text-sm font-semibold text-white mb-1">workout-tracker 連携</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-1">workout-tracker 連携</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-2">
             <div className="flex items-center gap-2">
               {workoutSessionCount > 0 ? (
@@ -618,7 +618,7 @@ export default function Settings({
                 <span className="text-muted">○</span>
               )}
               <div>
-                <p className="text-sm text-white font-medium">
+                <p className="text-sm text-foreground font-medium">
                   {workoutSameOrigin ? '自動連携中（同一ドメイン）' : 'ファイルインポート'}
                 </p>
                 <p className="text-xs text-muted">
@@ -633,7 +633,7 @@ export default function Settings({
 
         {/* ── AutoSleep連携状態 ────────────────────────────────────────────── */}
         <section>
-          <h2 className="text-sm font-semibold text-white mb-1">AutoSleep 連携</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-1">AutoSleep 連携</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
             {(['A', 'B'] as const).map(method => {
               const stat = autoSleepLastImport[method]
@@ -641,7 +641,7 @@ export default function Settings({
                 <div key={method} className="flex items-center gap-2">
                   <span className="text-accentPurple">📥</span>
                   <div>
-                    <p className="text-sm text-white font-medium">
+                    <p className="text-sm text-foreground font-medium">
                       方法{method}：{method === 'A' ? 'Health Auto Export JSON' : 'AutoSleep CSV'}
                     </p>
                     <p className="text-xs text-muted">
@@ -658,7 +658,7 @@ export default function Settings({
 
         {/* ── 目標値設定 ───────────────────────────────────────────────────── */}
         <section>
-          <h2 className="text-sm font-semibold text-white mb-3">目標値設定</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-3">目標値設定</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-4">
             {[
               { key: 'targetWeight' as const,     label: '目標体重',    unit: 'kg', min: 30, max: 200, step: 0.1 },
@@ -679,7 +679,7 @@ export default function Settings({
                       [key]: e.target.value ? parseFloat(e.target.value) : undefined,
                     }))}
                     placeholder={`例: ${key === 'targetWeight' ? '67.0' : key === 'targetBodyFatPct' ? '12.0' : '57.0'}`}
-                    className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-accent"
+                    className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:border-accent"
                   />
                   <span className="text-sm text-muted w-6">{unit}</span>
                 </div>
@@ -704,7 +704,7 @@ export default function Settings({
             ].map(({ label, date, count, color }) => (
               <div key={label} className="flex justify-between items-center">
                 <div>
-                  <p className="text-xs text-white">{label}</p>
+                  <p className="text-xs text-foreground">{label}</p>
                   <p className="text-xs text-muted">{date ? `最終: ${date}` : 'インポートなし'}</p>
                 </div>
                 <span className={`text-xs font-semibold text-${color}`}>{count}件</span>
@@ -717,9 +717,9 @@ export default function Settings({
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">データエクスポート</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-2">
-            <button onClick={handleExportBodyCSV}  className="py-2.5 bg-surface border border-border rounded-xl text-sm text-white hover:border-accent transition-colors">体組成 CSV エクスポート</button>
-            <button onClick={handleExportSleepCSV} className="py-2.5 bg-surface border border-border rounded-xl text-sm text-white hover:border-accentPurple transition-colors">睡眠 CSV エクスポート</button>
-            <button onClick={handleExportAllJSON}  className="py-2.5 bg-surface border border-border rounded-xl text-sm text-white hover:border-accentGreen transition-colors">全データ JSON エクスポート</button>
+            <button onClick={handleExportBodyCSV}  className="py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground hover:border-accent transition-colors">体組成 CSV エクスポート</button>
+            <button onClick={handleExportSleepCSV} className="py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground hover:border-accentPurple transition-colors">睡眠 CSV エクスポート</button>
+            <button onClick={handleExportAllJSON}  className="py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground hover:border-accentGreen transition-colors">全データ JSON エクスポート</button>
           </div>
         </section>
 
@@ -758,7 +758,7 @@ export default function Settings({
       {confirmReset && (
         <div className="fixed inset-0 bg-black/70 z-40 flex items-end">
           <div className="bg-surface rounded-t-2xl w-full p-6 flex flex-col gap-4">
-            <h3 className="text-white font-semibold">確認</h3>
+            <h3 className="text-foreground font-semibold">確認</h3>
             <p className="text-sm text-muted">
               {confirmReset === 'all'
                 ? '全データ（体組成・睡眠・設定）を削除します。この操作は取り消せません。'

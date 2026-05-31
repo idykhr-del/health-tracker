@@ -19,7 +19,7 @@ export default function ProgressBar({ label, current, target, unit = '', invert 
     <div className="flex flex-col gap-1">
       <div className="flex justify-between text-xs">
         <span className="text-muted">{label}</span>
-        <span className={done ? 'text-accentGreen' : 'text-white'}>
+        <span className={done ? 'text-accentGreen' : 'text-foreground'}>
           {current}{unit} / 目標 {target}{unit}
         </span>
       </div>

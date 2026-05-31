@@ -9,7 +9,7 @@ export default function EmptyState({ icon, title, description, action }: Props) 
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-16 px-6 text-center">
       <span className="text-5xl">{icon}</span>
-      <p className="text-white font-semibold text-base">{title}</p>
+      <p className="text-foreground font-semibold text-base">{title}</p>
       <p className="text-muted text-sm leading-relaxed">{description}</p>
       {action && (
         <button

@@ -30,15 +30,28 @@ function addDays(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+/** 分 → "X時間Y分" / "Y分" */
 function fmt(min: number): string {
   const h = Math.floor(min / 60), m = min % 60
-  return h > 0 ? `${h}h${m > 0 ? m + 'm' : ''}` : `${m}m`
+  return h > 0 ? `${h}時間${m > 0 ? m + '分' : ''}` : `${m}分`
+}
+
+/** 睡眠スコア（100点満点）
+ *  = 深睡眠比率×40 + REM比率×30 + 総睡眠時間スコア×30
+ *  総睡眠時間スコア = min(totalMinutes/480, 1)×100
+ */
+function calcSleepScore(totalMin?: number, deepMin?: number, remMin?: number): number | null {
+  if (!totalMin || totalMin === 0) return null
+  const deepRatio    = (deepMin ?? 0) / totalMin
+  const remRatio     = (remMin  ?? 0) / totalMin
+  const durationPart = Math.min(totalMin / 480, 1)
+  return Math.round(deepRatio * 40 + remRatio * 30 + durationPart * 30)
 }
 
 /** 推定値バッジ */
 function EstBadge() {
   return (
-    <span className="text-[9px] text-yellow-400/80 border border-yellow-400/40 rounded px-1 ml-0.5 leading-none">推定</span>
+    <span className="text-[9px] text-amber-600 border border-amber-400/60 rounded px-1 ml-0.5 leading-none">推定</span>
   )
 }
 
@@ -107,6 +120,11 @@ export default function Dashboard({
     return `${parseInt(date.slice(5, 7))}/${parseInt(date.slice(8))}(${dow})`
   }
 
+  // 睡眠スコア
+  const sleepScore = lastNightSleep
+    ? calcSleepScore(lastNightSleep.asleepMinutes, lastNightSleep.deepMinutes, lastNightSleep.remMinutes)
+    : null
+
   return (
     <div className="overflow-y-auto h-full pb-6">
       <div className="px-4 pt-4 flex flex-col gap-5">
@@ -116,7 +134,7 @@ export default function Dashboard({
           <div className={`flex items-center justify-between rounded-xl px-4 py-2 text-xs
             ${withingsSyncStatus === 'syncing'  ? 'bg-accent/10 text-accent' :
               withingsSyncStatus === 'success'  ? 'bg-accentGreen/10 text-accentGreen' :
-                                                  'bg-red-400/10 text-red-400'}`}>
+                                                  'bg-red-100 text-red-600'}`}>
             <span>
               {withingsSyncStatus === 'syncing' ? '⟳ Withings 同期中...' :
                withingsSyncStatus === 'success' ? `✓ Withings 最終同期: ${withingsLastSync ?? ''}` :
@@ -132,43 +150,28 @@ export default function Dashboard({
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">体組成（最新値）</h2>
 
-          {/* Row 1: 体重 / 体脂肪率 / 筋肉量 */}
+          {/* Row 1: 体重 / 体脂肪率 / 除脂肪体重 */}
           <div className="grid grid-cols-3 gap-2 mb-2">
-            <SummaryCard label="体重"    value={weekChange.latestWeight}   unit="kg" change={weekChange.weightChange}   changeUnit="kg" />
-            <SummaryCard label="体脂肪率" value={weekChange.latestBodyFat}  unit="%"  change={weekChange.bodyFatChange}  changeUnit="%" />
-            <SummaryCard label="筋肉量"  value={weekChange.latestMuscle}   unit="kg" change={weekChange.muscleChange}   changeUnit="kg" />
+            <SummaryCard label="体重"      value={weekChange.latestWeight}  unit="kg" change={weekChange.weightChange}  changeUnit="kg" />
+            <SummaryCard label="体脂肪率"  value={weekChange.latestBodyFat} unit="%"  change={weekChange.bodyFatChange} changeUnit="%" />
+            <SummaryCard label="除脂肪体重" value={latestBody ? (latestBody.fatFreeMass ?? latestBody.leanBodyMass ?? '—') : '—'} unit="kg" />
           </div>
 
-          {/* Row 2: 骨量 / 水分量 / 除脂肪体重 */}
-          {latestBody && (latestBody.boneMass != null || latestBody.hydration != null || latestBody.fatFreeMass != null || latestBody.leanBodyMass != null) && (
-            <div className="grid grid-cols-3 gap-2 mb-2">
-              <SummaryCard label="骨量"     value={latestBody.boneMass    ?? '—'} unit="kg" />
-              <SummaryCard label="水分量"   value={latestBody.hydration   ?? '—'} unit="kg" />
-              <SummaryCard label="除脂肪体重" value={latestBody.fatFreeMass ?? latestBody.leanBodyMass ?? '—'} unit="kg" />
-            </div>
-          )}
-
-          {/* Row 3: 推定筋肉量（HAE）/ BMI / 内臓脂肪 */}
-          {latestBody && (latestBody.estimatedMuscleMass != null || latestBody.bmi != null || latestBody.visceralFat != null) && (
-            <div className="grid grid-cols-3 gap-2 mb-2">
+          {/* Row 2: 推定筋肉量 / BMI（データがある場合のみ）*/}
+          {latestBody && (latestBody.estimatedMuscleMass != null || latestBody.bmi != null) && (
+            <div className="grid grid-cols-3 gap-2">
               {latestBody.estimatedMuscleMass != null ? (
-                <div className="bg-card rounded-xl p-3 flex flex-col gap-0.5 relative overflow-hidden">
+                <div className="bg-card rounded-xl p-3 flex flex-col gap-0.5 shadow-card">
                   <span className="text-[10px] text-muted">推定筋肉量 <EstBadge /></span>
                   <span className="text-lg font-bold text-accent">
                     {latestBody.estimatedMuscleMass}<span className="text-xs font-normal text-muted ml-0.5">kg</span>
                   </span>
                 </div>
               ) : <div />}
-              <SummaryCard label="BMI"     value={latestBody.bmi        ?? '—'} unit="" />
-              <SummaryCard label="内臓脂肪" value={latestBody.visceralFat ?? '—'} unit="" />
-            </div>
-          )}
-
-          {/* Row 4: 代謝年齢 / 基礎代謝 */}
-          {latestBody && (latestBody.metabolicAge != null || latestBody.bmr != null) && (
-            <div className="grid grid-cols-3 gap-2">
-              <SummaryCard label="代謝年齢" value={latestBody.metabolicAge ?? '—'} unit="歳" />
-              {latestBody.bmr != null && <SummaryCard label="基礎代謝" value={latestBody.bmr} unit="kcal" />}
+              {latestBody.bmi != null
+                ? <SummaryCard label="BMI" value={latestBody.bmi} unit="" />
+                : <div />}
+              <div />
             </div>
           )}
         </section>
@@ -179,7 +182,7 @@ export default function Dashboard({
             <h2 className="text-xs text-muted uppercase tracking-wider mb-2">
               昨夜の睡眠 <span className="text-muted normal-case">({lastNightSleep.date})</span>
             </h2>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-3 gap-2 mb-2">
               <SummaryCard
                 label="睡眠時間"
                 value={lastNightSleep.asleepMinutes ? fmt(lastNightSleep.asleepMinutes) : '—'}
@@ -193,6 +196,14 @@ export default function Dashboard({
                 value={lastNightSleep.remMinutes ? fmt(lastNightSleep.remMinutes) : '—'}
               />
             </div>
+            {sleepScore !== null && (
+              <div className="bg-card rounded-xl px-4 py-3 flex items-center justify-between shadow-card">
+                <span className="text-sm text-muted">睡眠スコア</span>
+                <span className="text-2xl font-bold text-accentPurple">
+                  {sleepScore}<span className="text-xs font-normal text-muted ml-0.5">点</span>
+                </span>
+              </div>
+            )}
           </section>
         )}
 
@@ -224,7 +235,7 @@ export default function Dashboard({
         {(goals.targetWeight || goals.targetBodyFatPct || goals.targetMuscleMass) && (
           <section>
             <h2 className="text-xs text-muted uppercase tracking-wider mb-3">目標進捗</h2>
-            <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
+            <div className="bg-card rounded-xl p-4 flex flex-col gap-3 shadow-card">
               <ProgressBar label="目標体重"    current={weekChange.latestWeight}  target={goals.targetWeight    ?? null} unit="kg" invert />
               <ProgressBar label="目標体脂肪率" current={weekChange.latestBodyFat} target={goals.targetBodyFatPct ?? null} unit="%" invert />
               <ProgressBar label="目標筋肉量"  current={weekChange.latestMuscle}  target={goals.targetMuscleMass ?? null} unit="kg" />
@@ -235,7 +246,7 @@ export default function Dashboard({
         {/* ── 直近7日間テーブル ─────────────────────────────────────────── */}
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">直近7日間</h2>
-          <div className="bg-card rounded-xl overflow-x-auto">
+          <div className="bg-card rounded-xl overflow-x-auto shadow-card">
             <table className="w-full text-xs min-w-[360px]">
               <thead>
                 <tr className="border-b border-border text-muted">
@@ -252,7 +263,7 @@ export default function Dashboard({
                 {last7.map(({ date, body, sleep, act, worked }) => (
                   <tr key={date} className="border-b border-border last:border-0">
                     <td className="py-2 px-3 text-muted whitespace-nowrap">{dayLabel(date)}</td>
-                    <td className="py-2 px-2 text-right text-white">
+                    <td className="py-2 px-2 text-right text-foreground">
                       {body?.weight != null ? `${body.weight}` : '—'}
                     </td>
                     <td className="py-2 px-2 text-right text-muted">

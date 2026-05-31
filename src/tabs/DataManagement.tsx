@@ -165,7 +165,7 @@ export default function DataManagement({
         <span className="text-xs bg-accentPurple/20 text-accentPurple px-2 py-0.5 rounded-full shrink-0">
           プレビュー
         </span>
-        <p className="text-xs text-white font-medium break-all">{p.fileName}</p>
+        <p className="text-xs text-foreground font-medium break-all">{p.fileName}</p>
       </div>
       <p className="text-xs text-muted">{p.records.length}件のデータが見つかりました</p>
       <div className="flex gap-2">
@@ -196,7 +196,7 @@ export default function DataManagement({
 
         {/* ── Withings Body Smart CSV ──────────────────────────────────────── */}
         <section>
-          <h2 className="text-sm font-semibold text-white mb-1">Withings Body Smart CSVインポート</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-1">Withings Body Smart CSVインポート</h2>
           <p className="text-xs text-muted mb-3">
             Health MateアプリのMyData → Exportから出力したCSVをインポートします。
           </p>
@@ -219,7 +219,7 @@ export default function DataManagement({
         {/* ── AutoSleep 方法A ──────────────────────────────────────────────── */}
         <section>
           <div className="flex items-center gap-2 mb-1">
-            <h2 className="text-sm font-semibold text-white">AutoSleep 方法A</h2>
+            <h2 className="text-sm font-semibold text-foreground">AutoSleep 方法A</h2>
             <span className="text-xs bg-accentPurple/20 text-accentPurple px-2 py-0.5 rounded-full">推奨・準自動</span>
           </div>
           <p className="text-xs text-muted mb-1">
@@ -230,7 +230,7 @@ export default function DataManagement({
           {/* Step guide accordion */}
           <details className="bg-card rounded-xl mb-3">
             <summary className="px-4 py-3 text-xs text-muted cursor-pointer select-none flex justify-between items-center">
-              <span className="font-medium text-white">設定手順を見る</span>
+              <span className="font-medium text-foreground">設定手順を見る</span>
               <span>▼</span>
             </summary>
             <div className="px-4 pb-4 flex flex-col gap-3">
@@ -284,7 +284,7 @@ export default function DataManagement({
         {/* ── AutoSleep 方法B ──────────────────────────────────────────────── */}
         <section>
           <div className="flex items-center gap-2 mb-1">
-            <h2 className="text-sm font-semibold text-white">AutoSleep 方法B</h2>
+            <h2 className="text-sm font-semibold text-foreground">AutoSleep 方法B</h2>
             <span className="text-xs bg-border text-muted px-2 py-0.5 rounded-full">無料・週次手動</span>
           </div>
           <p className="text-xs text-muted mb-1">
@@ -295,7 +295,7 @@ export default function DataManagement({
           {/* Step guide accordion */}
           <details className="bg-card rounded-xl mb-3">
             <summary className="px-4 py-3 text-xs text-muted cursor-pointer select-none flex justify-between items-center">
-              <span className="font-medium text-white">エクスポート手順を見る</span>
+              <span className="font-medium text-foreground">エクスポート手順を見る</span>
               <span>▼</span>
             </summary>
             <div className="px-4 pb-4 flex flex-col gap-3">
@@ -336,11 +336,11 @@ export default function DataManagement({
 
         {/* ── workout-tracker 連携 ─────────────────────────────────────────── */}
         <section>
-          <h2 className="text-sm font-semibold text-white mb-1">workout-tracker 連携</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-1">workout-tracker 連携</h2>
           <div className="bg-card rounded-xl p-4 flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <div className={`w-2 h-2 rounded-full ${workoutSessionCount > 0 ? 'bg-accentGreen' : 'bg-red-400'}`} />
-              <span className="text-sm text-white">
+              <span className="text-sm text-foreground">
                 {workoutSessionCount > 0 ? `${workoutSessionCount}件 読み込み済み` : 'データなし'}
               </span>
               {workoutFromFile
@@ -372,7 +372,7 @@ export default function DataManagement({
               {[...settings.importHistory].reverse().slice(0, 10).map(h => (
                 <div key={h.id} className="flex items-center justify-between px-4 py-3 border-b border-border last:border-0">
                   <div>
-                    <p className="text-xs text-white">{h.source}</p>
+                    <p className="text-xs text-foreground">{h.source}</p>
                     <p className="text-xs text-muted">{new Date(h.timestamp).toLocaleString('ja-JP')}</p>
                   </div>
                   <span className={`text-xs font-medium px-2 py-1 rounded-full
@@ -393,7 +393,7 @@ export default function DataManagement({
       {showOverwriteDialog && preview && (
         <div className="fixed inset-0 bg-black/70 z-40 flex items-end">
           <div className="bg-surface rounded-t-2xl w-full p-6 flex flex-col gap-4">
-            <h3 className="text-white font-semibold">重複データがあります</h3>
+            <h3 className="text-foreground font-semibold">重複データがあります</h3>
             <p className="text-sm text-muted">
               {preview.duplicates}件のデータが既存と日付が重複しています。上書きしますか？
             </p>

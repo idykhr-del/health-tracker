@@ -125,10 +125,10 @@ export default function App() {
   }, [workoutStore, addImportHistory])
 
   return (
-    <div className="flex flex-col h-svh bg-bg text-white">
+    <div className="flex flex-col h-svh bg-bg text-foreground">
       {/* Header */}
       <header className="flex items-center justify-between px-4 pt-12 pb-3 border-b border-border bg-surface shrink-0">
-        <h1 className="text-base font-bold text-white">{TAB_TITLES[tab]}</h1>
+        <h1 className="text-base font-bold text-foreground">{TAB_TITLES[tab]}</h1>
         <div className="text-accent text-lg">🏃</div>
       </header>
 
