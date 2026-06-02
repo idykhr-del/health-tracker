@@ -101,12 +101,9 @@ export function mergeSleepRecords(primary: SleepRecord[], secondary: SleepRecord
       if (existing.deepMinutes   == null) existing.deepMinutes   = sec.deepMinutes
       if (existing.remMinutes    == null) existing.remMinutes    = sec.remMinutes
     } else {
-      // Withings にない日付: totalMinutes → asleepMinutes にマップして追加
-      const mapped: SleepRecord = {
-        ...sec,
-        asleepMinutes: haeRec.totalMinutes ?? sec.asleepMinutes,
-      }
-      map.set(sec.date, mapped)
+      // Withings にない日付: sec.asleepMinutes は health-data.ts 側で
+      // totalMinutes からマップ済みなので、そのまま追加
+      map.set(sec.date, { ...sec })
     }
   }
 

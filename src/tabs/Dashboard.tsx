@@ -120,7 +120,7 @@ export default function Dashboard({
     return `${parseInt(date.slice(5, 7))}/${parseInt(date.slice(8))}(${dow})`
   }
 
-  // 睡眠スコア
+  // 睡眠スコア（asleepMinutes は health-data.ts で totalMinutes からマップ済み）
   const sleepScore = lastNightSleep
     ? calcSleepScore(lastNightSleep.asleepMinutes, lastNightSleep.deepMinutes, lastNightSleep.remMinutes)
     : null

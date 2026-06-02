@@ -115,12 +115,13 @@ interface HaeBodyRecord {
   source:               'health_auto_export'
 }
 interface HaeSleepRecord {
-  id:            string
-  date:          string
-  totalMinutes?: number
-  deepMinutes?:  number
-  remMinutes?:   number
-  source:        'health_auto_export'
+  id:             string
+  date:           string
+  asleepMinutes?: number   // totalMinutes と同値（SleepRecord 互換）
+  totalMinutes?:  number
+  deepMinutes?:   number
+  remMinutes?:    number
+  source:         'health_auto_export'
 }
 interface HaeActivityRecord {
   date:              string
@@ -138,7 +139,14 @@ function toBodyRecords(dates: string[], raw: (StoredBody | null)[]): HaeBodyReco
 }
 function toSleepRecords(dates: string[], raw: (StoredSleep | null)[]): HaeSleepRecord[] {
   return raw
-    .map((v, i) => v == null ? null : { id: `hae-sleep-${dates[i]}`, date: dates[i], source: 'health_auto_export' as const, ...v })
+    .map((v, i) => v == null ? null : {
+      id:             `hae-sleep-${dates[i]}`,
+      date:           dates[i],
+      source:         'health_auto_export' as const,
+      ...v,
+      // asleepMinutes を明示的にマップ（SleepRecord 型との互換性を保証）
+      asleepMinutes:  v.totalMinutes,
+    })
     .filter((r): r is HaeSleepRecord => r !== null)
     .sort((a, b) => a.date.localeCompare(b.date))
 }
