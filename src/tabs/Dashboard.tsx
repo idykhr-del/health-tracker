@@ -87,9 +87,8 @@ export default function Dashboard({
   // 昨夜の睡眠
   const lastNightSleep = sleepRecords.find(r => r.date === yesterday) ?? sleepRecords.find(r => r.date === today)
 
-  // 今日の活動
-  const todayActivity = activityRecords.find(r => r.date === today)
-    ?? activityRecords.find(r => r.date === yesterday)
+  // 昨日の活動（yesterday 固定）
+  const yesterdayActivity = activityRecords.find(r => r.date === yesterday)
 
   // 今週のトレーニング
   const thisWeekStrength = [
@@ -150,28 +149,26 @@ export default function Dashboard({
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">体組成（最新値）</h2>
 
-          {/* Row 1: 体重 / 体脂肪率 / 除脂肪体重 */}
+          {/* Row 1: 体重 / 体脂肪率 / 推定筋肉量 */}
           <div className="grid grid-cols-3 gap-2 mb-2">
-            <SummaryCard label="体重"      value={weekChange.latestWeight}  unit="kg" change={weekChange.weightChange}  changeUnit="kg" />
-            <SummaryCard label="体脂肪率"  value={weekChange.latestBodyFat} unit="%"  change={weekChange.bodyFatChange} changeUnit="%" />
-            <SummaryCard label="除脂肪体重" value={latestBody ? (latestBody.fatFreeMass ?? latestBody.leanBodyMass ?? '—') : '—'} unit="kg" />
+            <SummaryCard label="体重"     value={weekChange.latestWeight}  unit="kg" change={weekChange.weightChange}  changeUnit="kg" />
+            <SummaryCard label="体脂肪率" value={weekChange.latestBodyFat} unit="%"  change={weekChange.bodyFatChange} changeUnit="%" />
+            {latestBody?.estimatedMuscleMass != null ? (
+              <div className="bg-card rounded-xl p-3 flex flex-col gap-0.5 shadow-card">
+                <span className="text-[10px] text-muted">推定筋肉量 <EstBadge /></span>
+                <span className="text-lg font-bold text-accent">
+                  {latestBody.estimatedMuscleMass}<span className="text-xs font-normal text-muted ml-0.5">kg</span>
+                </span>
+              </div>
+            ) : <div />}
           </div>
 
-          {/* Row 2: 推定筋肉量 / BMI（データがある場合のみ）*/}
-          {latestBody && (latestBody.estimatedMuscleMass != null || latestBody.bmi != null) && (
-            <div className="grid grid-cols-3 gap-2">
-              {latestBody.estimatedMuscleMass != null ? (
-                <div className="bg-card rounded-xl p-3 flex flex-col gap-0.5 shadow-card">
-                  <span className="text-[10px] text-muted">推定筋肉量 <EstBadge /></span>
-                  <span className="text-lg font-bold text-accent">
-                    {latestBody.estimatedMuscleMass}<span className="text-xs font-normal text-muted ml-0.5">kg</span>
-                  </span>
-                </div>
-              ) : <div />}
-              {latestBody.bmi != null
-                ? <SummaryCard label="BMI" value={latestBody.bmi} unit="" />
-                : <div />}
-              <div />
+          {/* Row 2: BMI（データがある場合のみ）*/}
+          {latestBody?.bmi != null && (
+            <div className="flex justify-start">
+              <div className="w-1/3 pr-1">
+                <SummaryCard label="BMI" value={latestBody.bmi} unit="" />
+              </div>
             </div>
           )}
         </section>
@@ -207,15 +204,15 @@ export default function Dashboard({
           </section>
         )}
 
-        {/* ── 今日の活動 ───────────────────────────────────────────────── */}
-        {todayActivity && (todayActivity.steps != null || todayActivity.restingHeartRate != null) && (
+        {/* ── 昨日の活動 ───────────────────────────────────────────────── */}
+        {yesterdayActivity && (yesterdayActivity.steps != null || yesterdayActivity.restingHeartRate != null) && (
           <section>
             <h2 className="text-xs text-muted uppercase tracking-wider mb-2">
-              今日の活動 <span className="text-muted normal-case">({todayActivity.date})</span>
+              昨日の活動 <span className="text-muted normal-case">({yesterdayActivity.date})</span>
             </h2>
             <div className="grid grid-cols-3 gap-2">
-              <SummaryCard label="歩数"         value={todayActivity.steps?.toLocaleString() ?? '—'} unit="歩" />
-              <SummaryCard label="安静時心拍数" value={todayActivity.restingHeartRate ?? '—'} unit="bpm" />
+              <SummaryCard label="歩数"         value={yesterdayActivity.steps?.toLocaleString() ?? '—'} unit="歩" />
+              <SummaryCard label="安静時心拍数" value={yesterdayActivity.restingHeartRate ?? '—'} unit="bpm" />
               <div />
             </div>
           </section>

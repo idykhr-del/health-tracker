@@ -97,6 +97,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const sleepKey = ['sleep_analysis', 'HKCategoryTypeIdentifierSleepAnalysis']
     .find(k => Array.isArray((payload[k] as Metric | undefined)?.data))
   if (sleepKey) {
+    console.log('[health-webhook] sleep_analysis first entry:',
+      JSON.stringify((payload[sleepKey] as Metric).data[0] ?? null))
     for (const entry of (payload[sleepKey] as Metric).data as SleepEntry[]) {
       const date = toDate(entry.date)
       if (!date) continue
