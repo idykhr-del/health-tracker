@@ -2,19 +2,21 @@ import { useState, useEffect, useCallback } from 'react'
 import type { BodyRecord, SleepRecord, HaeActivityRecord } from '../types'
 
 interface HaeApiResponse {
-  bodyRecords?:     Partial<BodyRecord>[]
-  sleepRecords?:    Partial<SleepRecord>[]
-  activityRecords?: HaeActivityRecord[]
-  error?:           string
+  bodyRecords?:        Partial<BodyRecord>[]
+  sleepRecords?:       Partial<SleepRecord>[]
+  activityRecords?:    HaeActivityRecord[]
+  sleepStartHistory?:  number[]
+  error?:              string
 }
 
 interface UseHealthAutoExportReturn {
-  haeBody:      BodyRecord[]
-  haeSleep:     SleepRecord[]
-  haeActivity:  HaeActivityRecord[]
-  haeLoading:   boolean
-  haeError:     string | null
-  haeRefresh:   () => void
+  haeBody:             BodyRecord[]
+  haeSleep:            SleepRecord[]
+  haeActivity:         HaeActivityRecord[]
+  sleepStartHistory:   number[]
+  haeLoading:          boolean
+  haeError:            string | null
+  haeRefresh:          () => void
 }
 
 /**
@@ -22,11 +24,12 @@ interface UseHealthAutoExportReturn {
  * アプリ起動時に /api/health-data を呼び出す（直近7日分）。
  */
 export function useHealthAutoExport(): UseHealthAutoExportReturn {
-  const [haeBody,     setHaeBody]     = useState<BodyRecord[]>([])
-  const [haeSleep,    setHaeSleep]    = useState<SleepRecord[]>([])
-  const [haeActivity, setHaeActivity] = useState<HaeActivityRecord[]>([])
-  const [haeLoading,  setHaeLoading]  = useState(false)
-  const [haeError,    setHaeError]    = useState<string | null>(null)
+  const [haeBody,            setHaeBody]            = useState<BodyRecord[]>([])
+  const [haeSleep,           setHaeSleep]           = useState<SleepRecord[]>([])
+  const [haeActivity,        setHaeActivity]        = useState<HaeActivityRecord[]>([])
+  const [sleepStartHistory,  setSleepStartHistory]  = useState<number[]>([])
+  const [haeLoading,         setHaeLoading]         = useState(false)
+  const [haeError,           setHaeError]           = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     setHaeLoading(true)
@@ -44,9 +47,10 @@ export function useHealthAutoExport(): UseHealthAutoExportReturn {
       })
       console.log('[useHealthAutoExport] activityRecords:', JSON.stringify(data.activityRecords ?? []))
 
-      setHaeBody(    (data.bodyRecords     ?? []) as BodyRecord[])
-      setHaeSleep(   (data.sleepRecords    ?? []) as SleepRecord[])
-      setHaeActivity( data.activityRecords ?? [])
+      setHaeBody(           (data.bodyRecords     ?? []) as BodyRecord[])
+      setHaeSleep(          (data.sleepRecords    ?? []) as SleepRecord[])
+      setHaeActivity(        data.activityRecords ?? [])
+      setSleepStartHistory(  data.sleepStartHistory ?? [])
     } catch (e) {
       console.warn('[useHealthAutoExport] fetch error:', e)
       setHaeError(String(e))
@@ -57,7 +61,7 @@ export function useHealthAutoExport(): UseHealthAutoExportReturn {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  return { haeBody, haeSleep, haeActivity, haeLoading, haeError, haeRefresh: fetchData }
+  return { haeBody, haeSleep, haeActivity, sleepStartHistory, haeLoading, haeError, haeRefresh: fetchData }
 }
 
 /**

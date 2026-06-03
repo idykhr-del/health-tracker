@@ -46,6 +46,7 @@ export interface SleepRecord {
   inBedMinutes?: number
   asleepMinutes?: number
   awakeMinutes?: number
+  sleepStartMinutes?: number  // 0:00からの経過分（就寝時刻の一貫性スコア用）
   sleepScore?: number
   quality?: number
   deepMinutes?: number

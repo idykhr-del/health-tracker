@@ -34,6 +34,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     d.setDate(d.getDate() - i)
     return d.toISOString().slice(0, 10)
   })
+  // 就寝時刻一貫性スコア用: 過去14日分の日付（7日とは別に追加分の8〜14日前）
+  const dates14 = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    return d.toISOString().slice(0, 10)
+  })
 
   try {
     const redisUrl   = process.env['KV_REST_API_URL']
@@ -42,14 +48,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const redis = new Redis({ url: redisUrl, token: redisToken })
 
     // 各カテゴリの key リスト → mget で一括取得
-    const bodyKeys     = dates.map(d => `hae:body:${d}`)
-    const sleepKeys    = dates.map(d => `hae:sleep:${d}`)
-    const activityKeys = dates.map(d => `hae:activity:${d}`)
+    const bodyKeys      = dates.map(d => `hae:body:${d}`)
+    const sleepKeys     = dates.map(d => `hae:sleep:${d}`)
+    const activityKeys  = dates.map(d => `hae:activity:${d}`)
+    const sleep14Keys   = dates14.map(d => `hae:sleep:${d}`)
 
-    const [rawBodies, rawSleeps, rawActs] = await Promise.all([
+    const [rawBodies, rawSleeps, rawActs, rawSleeps14] = await Promise.all([
       redis.mget<StoredBody[]>(...bodyKeys),
       redis.mget<StoredSleep[]>(...sleepKeys),
       redis.mget<StoredActivity[]>(...activityKeys),
+      redis.mget<StoredSleep[]>(...sleep14Keys),
     ])
 
     // デバッグ: Redisから取得した生データを全件出力
@@ -69,6 +77,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const sleepRecords    = toSleepRecords(dates, rawSleeps)
     const activityRecords = toActivityRecords(dates, rawActs)
 
+    // 就寝時刻の一貫性スコア用: 14日分の sleepStartMinutes (nullは除外)
+    const sleepStartHistory: number[] = rawSleeps14
+      .map(v => v?.sleepStartMinutes ?? null)
+      .filter((n): n is number => n !== null)
+
     // デバッグ: 変換後のbodyRecordsのbodyFatPctを確認
     bodyRecords.forEach(r => {
       console.log(`[health-data] bodyRecord ${r.date}: weight=${r.weight} bodyFatPct=${r.bodyFatPct} leanBodyMass=${r.leanBodyMass} estimatedMuscleMass=${r.estimatedMuscleMass}`)
@@ -76,12 +89,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     console.log(`[health-data] body=${bodyRecords.length} sleep=${sleepRecords.length} activity=${activityRecords.length}`)
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ bodyRecords, sleepRecords, activityRecords }))
+    res.end(JSON.stringify({ bodyRecords, sleepRecords, activityRecords, sleepStartHistory }))
   } catch (e) {
     console.error('[health-data] error:', e)
     // KV 未設定でもアプリを壊さない
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ bodyRecords: [], sleepRecords: [], activityRecords: [], error: String(e) }))
+    res.end(JSON.stringify({ bodyRecords: [], sleepRecords: [], activityRecords: [], sleepStartHistory: [], error: String(e) }))
   }
 }
 
@@ -94,9 +107,11 @@ interface StoredBody {
   estimatedMuscleMass?: number
 }
 interface StoredSleep {
-  totalMinutes?: number
-  deepMinutes?:  number
-  remMinutes?:   number
+  totalMinutes?:      number
+  deepMinutes?:       number
+  remMinutes?:        number
+  sleepStartMinutes?: number
+  awakeMinutes?:      number
 }
 interface StoredActivity {
   steps?:            number
@@ -115,13 +130,15 @@ interface HaeBodyRecord {
   source:               'health_auto_export'
 }
 interface HaeSleepRecord {
-  id:             string
-  date:           string
-  asleepMinutes?: number   // totalMinutes と同値（SleepRecord 互換）
-  totalMinutes?:  number
-  deepMinutes?:   number
-  remMinutes?:    number
-  source:         'health_auto_export'
+  id:                  string
+  date:                string
+  asleepMinutes?:      number   // totalMinutes と同値（SleepRecord 互換）
+  totalMinutes?:       number
+  deepMinutes?:        number
+  remMinutes?:         number
+  sleepStartMinutes?:  number
+  awakeMinutes?:       number
+  source:              'health_auto_export'
 }
 interface HaeActivityRecord {
   date:              string

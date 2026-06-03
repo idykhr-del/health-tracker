@@ -103,9 +103,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       const date = toDate(entry.date)
       if (!date) continue
       const s = upsertSleep(sleepMap, date)
-      s.totalMinutes = toMin(entry.totalSleep) ?? s.totalMinutes
-      s.deepMinutes  = toMin(entry.deep)       ?? s.deepMinutes
-      s.remMinutes   = toMin(entry.rem)        ?? s.remMinutes
+      s.totalMinutes      = toMin(entry.totalSleep)         ?? s.totalMinutes
+      s.deepMinutes       = toMin(entry.deep)               ?? s.deepMinutes
+      s.remMinutes        = toMin(entry.rem)                ?? s.remMinutes
+      s.awakeMinutes      = toMin(entry.awake)              ?? s.awakeMinutes
+      s.sleepStartMinutes = toStartMin(entry.sleepStart)    ?? s.sleepStartMinutes
     }
   }
 
@@ -167,9 +169,11 @@ interface StoredBody {
   estimatedMuscleMass?: number
 }
 interface StoredSleep {
-  totalMinutes?: number
-  deepMinutes?:  number
-  remMinutes?:   number
+  totalMinutes?:      number
+  deepMinutes?:       number
+  remMinutes?:        number
+  sleepStartMinutes?: number  // 0:00からの経過分 (例: 00:27→27, 23:50→1430)
+  awakeMinutes?:      number  // 覚醒時間（分）
 }
 interface StoredActivity {
   steps?:            number
@@ -180,7 +184,7 @@ interface StoredActivity {
 
 interface Metric    { data: unknown[]; units?: string }
 interface QtyEntry  { date: string; qty: number }
-interface SleepEntry { date: string; totalSleep?: number | string; deep?: number | string; rem?: number | string }
+interface SleepEntry { date: string; totalSleep?: number | string; deep?: number | string; rem?: number | string; sleepStart?: string; awake?: number | string }
 
 // ── ユーティリティ ────────────────────────────────────────────────────────────
 
@@ -225,6 +229,14 @@ function toDate(raw: string): string | null {
   if (!raw) return null
   const m = raw.match(/^(\d{4}-\d{2}-\d{2})/)
   return m ? m[1] : null
+}
+
+/** "HH:MM" or "YYYY-MM-DD HH:MM:SS +ZZZZ" → 0:00からの経過分 */
+function toStartMin(raw?: string): number | undefined {
+  if (!raw) return undefined
+  const m = raw.match(/(\d{1,2}):(\d{2})/)
+  if (!m) return undefined
+  return parseInt(m[1]) * 60 + parseInt(m[2])
 }
 
 /** 時間数 or 秒数 → 分 */

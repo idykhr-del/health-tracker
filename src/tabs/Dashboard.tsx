@@ -5,17 +5,18 @@ import ProgressBar from '../components/ui/ProgressBar'
 import EmptyState from '../components/ui/EmptyState'
 
 interface Props {
-  data:              BodyData
-  sessions:          WorkoutSession[]
-  onNavigateToData:  () => void
+  data:               BodyData
+  sessions:           WorkoutSession[]
+  onNavigateToData:   () => void
   withingsSyncStatus: WithingsSyncStatus
-  withingsLastSync:  string | null
-  onWithingsSyncNow: () => void
+  withingsLastSync:   string | null
+  onWithingsSyncNow:  () => void
   // HAE
-  activityRecords:   HaeActivityRecord[]
+  activityRecords:    HaeActivityRecord[]
+  sleepStartHistory:  number[]   // 過去14日分の就寝時刻（分）— 一貫性スコア用
   // Notion
-  notionWorkouts:    NotionWorkout[]
-  stravaActivities:  StravaActivity[]
+  notionWorkouts:     NotionWorkout[]
+  stravaActivities:   StravaActivity[]
 }
 
 interface StravaActivity {
@@ -36,16 +37,64 @@ function fmt(min: number): string {
   return h > 0 ? `${h}時間${m > 0 ? m + '分' : ''}` : `${m}分`
 }
 
-/** 睡眠スコア（100点満点）
- *  = 深睡眠比率×40 + REM比率×30 + 総睡眠時間スコア×30
- *  総睡眠時間スコア = min(totalMinutes/480, 1)×100
+/**
+ * Apple風睡眠スコア（100点満点）
+ * = 睡眠時間50点 + 就寝時刻の一貫性30点 + 中断の少なさ20点
  */
-function calcSleepScore(totalMin?: number, deepMin?: number, remMin?: number): number | null {
+function calcSleepScore(
+  totalMin?: number,
+  sleepStartMin?: number,
+  awakeMin?: number,
+  sleepStartHistory: number[] = [],
+  sleepGoalMin = 480,
+): number | null {
   if (!totalMin || totalMin === 0) return null
-  const deepRatio    = (deepMin ?? 0) / totalMin
-  const remRatio     = (remMin  ?? 0) / totalMin
-  const durationPart = Math.min(totalMin / 480, 1)
-  return Math.round(deepRatio * 40 + remRatio * 30 + durationPart * 30)
+
+  // 1. 睡眠時間スコア（50点）
+  const ratio = totalMin / sleepGoalMin
+  const durationScore = Math.min(ratio >= 1 ? 50 : Math.pow(ratio, 1.2) * 50, 50)
+
+  // 2. 就寝時刻の一貫性スコア（30点）
+  let consistencyScore: number
+  if (sleepStartMin == null) {
+    consistencyScore = 0
+  } else if (sleepStartHistory.length < 3) {
+    // データ不足 → 満点扱い
+    consistencyScore = 30
+  } else {
+    // 循環平均: 分を角度(ラジアン)に変換して sin/cos の平均 → 逆算
+    const toRad = (m: number) => (m / 1440) * 2 * Math.PI
+    const sinSum = sleepStartHistory.reduce((s, m) => s + Math.sin(toRad(m)), 0)
+    const cosSum = sleepStartHistory.reduce((s, m) => s + Math.cos(toRad(m)), 0)
+    const meanAngle = Math.atan2(sinSum / sleepStartHistory.length, cosSum / sleepStartHistory.length)
+    const meanMin = ((meanAngle / (2 * Math.PI)) * 1440 + 1440) % 1440
+
+    // 循環差分（最短経路）
+    let diff = Math.abs(sleepStartMin - meanMin)
+    if (diff > 720) diff = 1440 - diff
+
+    if      (diff <= 30)  consistencyScore = 30
+    else if (diff <= 90)  consistencyScore = 30 - ((diff - 30) / 60) * 15   // 30→15
+    else if (diff <= 180) consistencyScore = 15 - ((diff - 90) / 90) * 10   // 15→5
+    else                  consistencyScore = 5
+  }
+
+  // 3. 中断の少なさスコア（20点）
+  let interruptScore: number
+  if (awakeMin == null) {
+    interruptScore = 18  // 不明 → 中央寄りの仮値
+  } else if (awakeMin <= 10) {
+    interruptScore = 20
+  } else if (awakeMin <= 30) {
+    interruptScore = 20 - ((awakeMin - 10) / 20) * 8    // 20→12
+  } else if (awakeMin <= 60) {
+    interruptScore = 12 - ((awakeMin - 30) / 30) * 7    // 12→5
+  } else {
+    interruptScore = 5
+  }
+
+  const total = durationScore + consistencyScore + interruptScore
+  return Math.min(100, Math.max(0, Math.round(total)))
 }
 
 /** 推定値バッジ */
@@ -58,7 +107,7 @@ function EstBadge() {
 export default function Dashboard({
   data, sessions, onNavigateToData,
   withingsSyncStatus, withingsLastSync, onWithingsSyncNow,
-  activityRecords, notionWorkouts, stravaActivities,
+  activityRecords, sleepStartHistory, notionWorkouts, stravaActivities,
 }: Props) {
   const { bodyRecords, sleepRecords, goals } = data
   const hasAnyData = bodyRecords.length > 0 || sleepRecords.length > 0 || sessions.length > 0
@@ -119,9 +168,14 @@ export default function Dashboard({
     return `${parseInt(date.slice(5, 7))}/${parseInt(date.slice(8))}(${dow})`
   }
 
-  // 睡眠スコア（asleepMinutes は health-data.ts で totalMinutes からマップ済み）
+  // 睡眠スコア（Apple風: 睡眠時間50 + 就寝時刻一貫性30 + 中断の少なさ20）
   const sleepScore = lastNightSleep
-    ? calcSleepScore(lastNightSleep.asleepMinutes, lastNightSleep.deepMinutes, lastNightSleep.remMinutes)
+    ? calcSleepScore(
+        lastNightSleep.asleepMinutes,
+        lastNightSleep.sleepStartMinutes,
+        lastNightSleep.awakeMinutes,
+        sleepStartHistory,
+      )
     : null
 
   return (

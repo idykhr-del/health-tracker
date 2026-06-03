@@ -58,7 +58,7 @@ export default function App() {
   const workoutStore = useWorkoutStore()
 
   // ── Health Auto Export (Upstash Redis) ───────────────────────────────────
-  const { haeBody, haeSleep, haeActivity } = useHealthAutoExport()
+  const { haeBody, haeSleep, haeActivity, sleepStartHistory } = useHealthAutoExport()
 
   // ── Notion (workout + Strava) ─────────────────────────────────────────────
   const { notionWorkouts, stravaActivities } = useNotionData()
@@ -165,6 +165,7 @@ export default function App() {
                 withingsLastSync={withings.lastSyncLabel}
                 onWithingsSyncNow={withings.syncNow}
                 activityRecords={haeActivity}
+                sleepStartHistory={sleepStartHistory}
                 notionWorkouts={notionWorkouts}
                 stravaActivities={stravaActivities}
               />
