@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http'
+import { Redis } from '@upstash/redis'
 
 /**
  * POST /api/withings-data
@@ -87,6 +88,50 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   console.log(`[withings-data] OK: records=${records.length} grps=${grps.length}`)
   console.log(`[withings-data] meastypeCounts:`, JSON.stringify(debug.meastypeCounts))
 
+  // ── ④ Redis にトークン＆データをキャッシュ（health-data.ts の自動同期用）────
+  // フロントが手動同期した際にトークンを Redis へ移行し、直近30日分のデータも保存する。
+  // これにより既存ユーザーも再認証なしで on-demand sync が動く。
+  const redisUrl   = process.env['KV_REST_API_URL']
+  const redisToken = process.env['KV_REST_API_TOKEN']
+  if (redisUrl && redisToken) {
+    try {
+      const redis = new Redis({ url: redisUrl, token: redisToken })
+      const ops: Promise<unknown>[] = []
+
+      // トークン保存（refresh後の最新トークンを優先）
+      const finalToken = newTokens ?? { access_token: currentToken, refresh_token, expires_at: Math.floor(Date.now() / 1000) + 10800 }
+      if (finalToken.access_token && finalToken.refresh_token) {
+        ops.push(redis.set('withings:tokens', JSON.stringify({
+          access_token:  finalToken.access_token,
+          refresh_token: finalToken.refresh_token,
+          expires_at:    finalToken.expires_at,
+        }), { ex: 60 * 60 * 24 * 90 }))
+      }
+
+      // 直近60日分のデータを withings:body:YYYY-MM-DD に保存
+      const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 60)
+      const cutoffStr = cutoff.toISOString().slice(0, 10)
+      for (const rec of records) {
+        if (rec.date < cutoffStr) continue
+        const stored = {
+          weight:      rec.weight,
+          bodyFatPct:  rec.bodyFatPct,
+          fatMass:     rec.fatMass,
+          fatFreeMass: rec.fatFreeMass,
+          muscleMass:  rec.muscleMass,
+          boneMass:    rec.boneMass,
+        }
+        ops.push(redis.set(`withings:body:${rec.date}`, JSON.stringify(stored), { ex: 60 * 60 * 24 * 90 }))
+      }
+      ops.push(redis.set('withings:sync:last', String(Date.now()), { ex: 60 * 60 * 24 * 30 }))
+
+      await Promise.all(ops)
+      console.log(`[withings-data] Redis: tokens saved, ${records.length} body records cached`)
+    } catch (e) {
+      console.warn('[withings-data] Redis cache failed (non-fatal):', e)
+    }
+  }
+
   return json(res, 200, {
     records,
     debug,
@@ -119,22 +164,26 @@ interface FetchResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// meastype → フィールド名マッピング
-//   1  = weight     (体重, kg)
-//   6  = bodyFatPct (体脂肪率, %)
-//   8  = muscleMass (筋肉量, kg)
-//   76 = boneMass   (骨量, kg)
-//   88 = visceralFat (内臓脂肪指数)
-//   77 = hydration   (水分量, %)
+// meastype → フィールド名マッピング（Withings公式仕様）
+//   1  = weight       (体重, kg)
+//   5  = fatFreeMass  (除脂肪体重, kg)
+//   6  = bodyFatPct   (体脂肪率, %)
+//   8  = fatMass      (体脂肪量, kg)  ※旧コードでは誤って muscleMass としていた
+//   76 = muscleMass   (筋肉量, kg)   ※旧コードでは誤って boneMass としていた
+//   88 = boneMass     (骨量, kg)     ※旧コードでは誤って visceralFat としていた
+//   77 = hydration    (水分量, kg)
+//   170= visceralFat  (内臓脂肪指数) ※旧コードでは 88 と誤マッピング
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MEAS_FIELD: Record<number, string> = {
-  1:  'weight',
-  6:  'bodyFatPct',
-  8:  'muscleMass',
-  76: 'boneMass',
-  88: 'visceralFat',
-  77: 'hydration',
+  1:   'weight',
+  5:   'fatFreeMass',
+  6:   'bodyFatPct',
+  8:   'fatMass',
+  76:  'muscleMass',
+  88:  'boneMass',
+  77:  'hydration',
+  170: 'visceralFat',
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,9 +311,11 @@ interface BodyRecord {
   time?:        string
   weight:       number
   bodyFatPct?:  number
-  muscleMass?:  number
-  boneMass?:    number
-  visceralFat?: number
+  fatMass?:     number     // 体脂肪量 (meastype 8)
+  fatFreeMass?: number     // 除脂肪体重 (meastype 5)
+  muscleMass?:  number     // 筋肉量・実測値 (meastype 76)
+  boneMass?:    number     // 骨量 (meastype 88)
+  visceralFat?: number     // 内臓脂肪指数 (meastype 170)
   hydration?:   number
   source:       'withings'
 }
@@ -355,7 +406,9 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
       source:      'withings',
       weight:      s.fields['weight'],
       bodyFatPct:  s.fields['bodyFatPct'],
-      muscleMass:  s.fields['muscleMass'],
+      fatMass:     s.fields['fatMass'],
+      fatFreeMass: s.fields['fatFreeMass'],
+      muscleMass:  s.fields['muscleMass'],   // 実測値 (meastype 76)
       boneMass:    s.fields['boneMass'],
       visceralFat: s.fields['visceralFat'],
       hydration:   s.fields['hydration'],

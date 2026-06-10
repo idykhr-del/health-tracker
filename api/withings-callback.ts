@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
+import { Redis } from '@upstash/redis'
 
 /**
  * GET /api/withings-callback?code=xxx&state=health-tracker
@@ -74,6 +75,25 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     console.log('[withings-callback] refresh_token length:', refresh_token?.length ?? 'undefined')
     console.log('[withings-callback] access_token  prefix:', access_token?.slice(0, 10))
     // ──────────────────────────────────────────────────────────────────────────
+
+    // ── Redis にトークンを保存（サーバーサイド自動同期用）────────────────────────
+    // health-data.ts が朝のブリーフィング前に on-demand sync するために使う。
+    // フロントエンドは引き続き localStorage にも保存する（既存フロー維持）。
+    const redisUrl   = process.env['KV_REST_API_URL']
+    const redisToken = process.env['KV_REST_API_TOKEN']
+    if (redisUrl && redisToken) {
+      try {
+        const redis = new Redis({ url: redisUrl, token: redisToken })
+        await redis.set(
+          'withings:tokens',
+          JSON.stringify({ access_token, refresh_token, expires_at }),
+          { ex: 60 * 60 * 24 * 90 },  // 90日TTL
+        )
+        console.log('[withings-callback] Tokens saved to Redis (userid:', userid, ')')
+      } catch (e) {
+        console.warn('[withings-callback] Redis save failed (non-fatal):', e)
+      }
+    }
 
     return json(res, 200, { access_token, refresh_token, userid, expires_at })
 

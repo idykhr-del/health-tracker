@@ -203,11 +203,20 @@ export default function Dashboard({
         <section>
           <h2 className="text-xs text-muted uppercase tracking-wider mb-2">体組成（最新値）</h2>
 
-          {/* Row 1: 体重 / 体脂肪率 / 推定筋肉量 */}
+          {/* Row 1: 体重 / 体脂肪率 / 筋肉量（実測 or 推定） */}
           <div className="grid grid-cols-3 gap-2 mb-2">
             <SummaryCard label="体重"     value={weekChange.latestWeight}  unit="kg" change={weekChange.weightChange}  changeUnit="kg" />
             <SummaryCard label="体脂肪率" value={weekChange.latestBodyFat} unit="%"  change={weekChange.bodyFatChange} changeUnit="%" />
-            {latestBody?.estimatedMuscleMass != null ? (
+            {latestBody?.muscleMass != null ? (
+              // Withings 実測値: 「推定」バッジなし
+              <div className="bg-card rounded-xl p-3 flex flex-col gap-0.5 shadow-card">
+                <span className="text-[10px] text-muted">筋肉量</span>
+                <span className="text-lg font-bold text-accent">
+                  {latestBody.muscleMass}<span className="text-xs font-normal text-muted ml-0.5">kg</span>
+                </span>
+              </div>
+            ) : latestBody?.estimatedMuscleMass != null ? (
+              // HAE 推定値: 「推定」バッジあり
               <div className="bg-card rounded-xl p-3 flex flex-col gap-0.5 shadow-card">
                 <span className="text-[10px] text-muted">推定筋肉量 <EstBadge /></span>
                 <span className="text-lg font-bold text-accent">
