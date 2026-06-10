@@ -14,17 +14,18 @@ import { Redis } from '@upstash/redis'
  *   - 通常の sync は 1〜2秒で完了するため UX への影響は許容範囲。
  *
  * Redis キー:
- *   withings:tokens          → { access_token, refresh_token, expires_at }
- *   withings:sync:last       → Unix ms (最終 Withings sync 時刻)
- *   withings:body:YYYY-MM-DD → WithingsStoredBody
- *   hae:body:YYYY-MM-DD      → StoredBody (Health Auto Export)
- *   hae:sleep:YYYY-MM-DD     → StoredSleep
- *   hae:activity:YYYY-MM-DD  → StoredActivity
+ *   withings:tokens            → { access_token, refresh_token, expires_at }
+ *   withings:sync:last         → Unix ms (最終 Withings sync 時刻)
+ *   withings:body:YYYY-MM-DD   → WithingsStoredBody
+ *   hae:body:YYYY-MM-DD        → StoredBody (Health Auto Export)
+ *   hae:sleep:YYYY-MM-DD       → StoredSleep
+ *   hae:activity:YYYY-MM-DD    → StoredActivity
+ *   autosleep:sleep:YYYY-MM-DD → AutoSleepStored (Shortcuts 経由)
  *
  * レスポンス:
  * {
  *   bodyRecords:        MergedBodyRecord[]
- *   sleepRecords:       HaeSleepRecord[]
+ *   sleepRecords:       MergedSleepRecord[]
  *   activityRecords:    HaeActivityRecord[]
  *   sleepStartHistory:  number[]
  * }
@@ -62,37 +63,49 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     await syncWithingsIfStale(redis)
 
     // ── ② 全データを並列取得 ───────────────────────────────────────────────────
-    const withingsKeys = dates.map(d => `withings:body:${d}`)
-    const haeBodyKeys  = dates.map(d => `hae:body:${d}`)
-    const sleepKeys    = dates.map(d => `hae:sleep:${d}`)
-    const actKeys      = dates.map(d => `hae:activity:${d}`)
-    const sleep14Keys  = dates14.map(d => `hae:sleep:${d}`)
+    const withingsKeys    = dates.map(d => `withings:body:${d}`)
+    const haeBodyKeys     = dates.map(d => `hae:body:${d}`)
+    const sleepKeys       = dates.map(d => `hae:sleep:${d}`)
+    const actKeys         = dates.map(d => `hae:activity:${d}`)
+    const asKeys          = dates.map(d => `autosleep:sleep:${d}`)   // AutoSleep Shortcuts
+    const sleep14Keys     = dates14.map(d => `hae:sleep:${d}`)
+    const asSleep14Keys   = dates14.map(d => `autosleep:sleep:${d}`) // 就寝一貫性スコア用
 
-    const [rawWithings, rawHaeBodies, rawSleeps, rawActs, rawSleeps14] = await Promise.all([
+    const [rawWithings, rawHaeBodies, rawSleeps, rawActs, rawAs, rawSleeps14, rawAs14] = await Promise.all([
       redis.mget<WithingsStoredBody[]>(...withingsKeys),
       redis.mget<StoredBody[]>(...haeBodyKeys),
       redis.mget<StoredSleep[]>(...sleepKeys),
       redis.mget<StoredActivity[]>(...actKeys),
+      redis.mget<AutoSleepStored[]>(...asKeys),
       redis.mget<StoredSleep[]>(...sleep14Keys),
+      redis.mget<AutoSleepStored[]>(...asSleep14Keys),
     ])
 
-    // ── ③ マージ: Withings 優先、HAE フォールバック ──────────────────────────────
+    // ── ③ マージ ─────────────────────────────────────────────────────────────────
     const bodyRecords = dates
       .map((date, i) => mergeBodyRecord(date, rawWithings[i], rawHaeBodies[i]))
       .filter((r): r is MergedBodyRecord => r !== null)
       .sort((a, b) => a.date.localeCompare(b.date))
 
-    const sleepRecords    = toSleepRecords(dates, rawSleeps)
+    // 睡眠: AutoSleep Shortcuts 優先、HAE フォールバック
+    const sleepRecords = dates
+      .map((date, i) => mergeSleepRecord(date, rawAs[i], rawSleeps[i]))
+      .filter((r): r is MergedSleepRecord => r !== null)
+      .sort((a, b) => a.date.localeCompare(b.date))
+
     const activityRecords = toActivityRecords(dates, rawActs)
 
-    // 睡眠スコア用: 14日分の sleepStartMinutes
-    const sleepStartHistory: number[] = rawSleeps14
-      .map(v => v?.sleepStartMinutes ?? null)
+    // 就寝時刻一貫性スコア用 14日分: AutoSleep → HAE の順で優先
+    const sleepStartHistory: number[] = dates14
+      .map((_, i) => rawAs14[i]?.sleepStartMinutes ?? rawSleeps14[i]?.sleepStartMinutes ?? null)
       .filter((n): n is number => n !== null)
 
     console.log(`[health-data] body=${bodyRecords.length} sleep=${sleepRecords.length} activity=${activityRecords.length}`)
     bodyRecords.forEach(r => {
       console.log(`[health-data] body ${r.date}: weight=${r.weight} bodyFatPct=${r.bodyFatPct} muscleMass=${r.muscleMass} estimatedMuscleMass=${r.estimatedMuscleMass} source=${r.source}`)
+    })
+    sleepRecords.forEach(r => {
+      console.log(`[health-data] sleep ${r.date}: asleepMin=${r.asleepMinutes} score=${r.sleepScore} awakenings=${r.awakenings} source=${r.source}`)
     })
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -321,6 +334,18 @@ interface StoredSleep {
   sleepStartMinutes?: number
   awakeMinutes?:      number
 }
+
+interface AutoSleepStored {
+  sleepScore?:        number   // AutoSleep 独自スコア (0–100)
+  totalMinutes?:      number
+  deepMinutes?:       number
+  remMinutes?:        number
+  awakenings?:        number   // 覚醒回数
+  hrv?:               number
+  wakingBPM?:         number
+  sleepStartMinutes?: number
+  sleepEndMinutes?:   number
+}
 interface StoredActivity {
   steps?:            number
   restingHeartRate?: number
@@ -347,16 +372,19 @@ interface MergedBodyRecord {
   estimatedMuscleMass?: number   // HAE 推定値 (Withings 実測なし日のみ)
 }
 
-interface HaeSleepRecord {
+interface MergedSleepRecord {
   id:                 string
   date:               string
-  asleepMinutes?:     number
-  totalMinutes?:      number
+  asleepMinutes?:     number   // 総睡眠時間（分）
   deepMinutes?:       number
   remMinutes?:        number
-  sleepStartMinutes?: number
-  awakeMinutes?:      number
-  source:             'health_auto_export'
+  sleepStartMinutes?: number   // 就寝時刻 (0:00 からの分)
+  awakeMinutes?:      number   // 覚醒時間（分）
+  sleepScore?:        number   // AutoSleep 独自スコア
+  awakenings?:        number   // 覚醒回数
+  hrv?:               number
+  wakingBPM?:         number
+  source:             'autosleep_shortcut' | 'health_auto_export'
 }
 interface HaeActivityRecord {
   date:              string
@@ -366,17 +394,34 @@ interface HaeActivityRecord {
 
 // ── パーサー ──────────────────────────────────────────────────────────────────
 
-function toSleepRecords(dates: string[], raw: (StoredSleep | null)[]): HaeSleepRecord[] {
-  return raw
-    .map((v, i) => v == null ? null : {
-      id:     `hae-sleep-${dates[i]}`,
-      date:   dates[i],
-      source: 'health_auto_export' as const,
-      ...v,
-      asleepMinutes: v.totalMinutes,
-    })
-    .filter((r): r is HaeSleepRecord => r !== null)
-    .sort((a, b) => a.date.localeCompare(b.date))
+/**
+ * AutoSleep Shortcuts データ優先、HAE フォールバックで睡眠レコードをマージ。
+ * - スコア・覚醒回数・HRV・wakingBPM は AutoSleep 独自指標のため AutoSleep 優先
+ * - 睡眠時間・深睡眠・REM は AutoSleep にあればそれを使い、なければ HAE
+ * - 就寝時刻は AutoSleep → HAE の順で優先
+ */
+function mergeSleepRecord(
+  date: string,
+  as:   AutoSleepStored | null,
+  hae:  StoredSleep | null,
+): MergedSleepRecord | null {
+  if (!as && !hae) return null
+
+  const totalMin = as?.totalMinutes ?? hae?.totalMinutes
+  return {
+    id:                 as ? `as-sleep-${date}` : `hae-sleep-${date}`,
+    date,
+    source:             as ? 'autosleep_shortcut' : 'health_auto_export',
+    asleepMinutes:      totalMin,
+    deepMinutes:        as?.deepMinutes   ?? hae?.deepMinutes,
+    remMinutes:         as?.remMinutes    ?? hae?.remMinutes,
+    sleepStartMinutes:  as?.sleepStartMinutes ?? hae?.sleepStartMinutes,
+    awakeMinutes:       hae?.awakeMinutes,          // HAE から（AutoSleepは覚醒時間でなく回数）
+    sleepScore:         as?.sleepScore,             // AutoSleep 独自スコア
+    awakenings:         as?.awakenings,             // AutoSleep 独自
+    hrv:                as?.hrv,                    // AutoSleep 独自
+    wakingBPM:          as?.wakingBPM,              // AutoSleep 独自
+  }
 }
 function toActivityRecords(dates: string[], raw: (StoredActivity | null)[]): HaeActivityRecord[] {
   return raw

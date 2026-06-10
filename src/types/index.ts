@@ -57,7 +57,8 @@ export interface SleepRecord {
   spo2Avg?: number
   spo2Min?: number
   respAvg?: number
-  source: 'autosleep_csv' | 'health_auto_export' | 'shortcut' | 'manual'
+  awakenings?: number         // 覚醒回数（AutoSleep独自指標）
+  source: 'autosleep_csv' | 'autosleep_shortcut' | 'health_auto_export' | 'shortcut' | 'manual'
 }
 
 export interface Goals {
