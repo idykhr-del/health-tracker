@@ -71,35 +71,48 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const date    = normalizeDate(rawDate)
   if (!date) return json(res, 400, { error: `Invalid or missing date: "${rawDate}". Use YYYY-MM-DD.` })
 
+  // ── 受信内容をログ（Vercel Logs で確認可能）────────────────────────────────────
+  console.log('[sleep-ingest] payload keys:', Object.keys(payload).join(', '))
+  console.log('[sleep-ingest] raw payload:', JSON.stringify(payload))
+
   // ── フィールド抽出・正規化 ─────────────────────────────────────────────────────
+  // Shortcuts からはすべて文字列で届く。toNum が parseFloat で数値化する。
   const stored: AutoSleepStored = {}
 
+  // sleepScore: 0–100 の整数に丸める
   const sleepScore = toNum(payload['sleepScore'])
   if (sleepScore != null) stored.sleepScore = Math.min(100, Math.max(0, Math.round(sleepScore)))
 
+  // totalSleep / deepSleep / qualitySleep: 時間単位→分に変換
   const totalMin = toSleepMin(payload['totalSleep'])
   if (totalMin != null) stored.totalMinutes = totalMin
 
   const deepMin = toSleepMin(payload['deepSleep'])
   if (deepMin != null) stored.deepMinutes = deepMin
 
-  const remMin = toSleepMin(payload['remSleep'])
-  if (remMin != null) stored.remMinutes = remMin
+  // qualitySleep = AutoSleep の「質の良い睡眠」時間（REM相当）
+  const qualityMin = toSleepMin(payload['qualitySleep'])
+  if (qualityMin != null) stored.qualityMinutes = qualityMin
 
-  const awakenings = toNum(payload['awakenings'])
-  if (awakenings != null) stored.awakenings = Math.round(awakenings)
+  // heartRate = 起床時心拍数
+  const heartRate = toNum(payload['heartRate'])
+  if (heartRate != null) stored.wakingBPM = Math.round(heartRate)
 
+  // hrv
   const hrv = toNum(payload['hrv'])
   if (hrv != null) stored.hrv = r2(hrv)
 
-  const wakingBPM = toNum(payload['wakingBPM'])
-  if (wakingBPM != null) stored.wakingBPM = Math.round(wakingBPM)
+  // 以下は Shortcuts から来ない場合もある補助フィールド
+  const awakenings = toNum(payload['awakenings'])
+  if (awakenings != null) stored.awakenings = Math.round(awakenings)
 
   const startMin = toStartMin(payload['sleepStart'] as string | undefined)
   if (startMin != null) stored.sleepStartMinutes = startMin
 
   const endMin = toStartMin(payload['sleepEnd'] as string | undefined)
   if (endMin != null) stored.sleepEndMinutes = endMin
+
+  console.log('[sleep-ingest] stored:', JSON.stringify(stored))
 
   if (Object.keys(stored).length === 0) {
     return json(res, 400, { error: 'No valid fields found in payload' })
@@ -129,10 +142,10 @@ interface AutoSleepStored {
   sleepScore?:        number   // AutoSleep 独自スコア (0–100)
   totalMinutes?:      number   // 総睡眠時間（分）
   deepMinutes?:       number   // 深睡眠（分）
-  remMinutes?:        number   // REM 睡眠（分）
+  qualityMinutes?:    number   // qualitySleep = 質の良い睡眠時間（分）
   awakenings?:        number   // 覚醒回数
   hrv?:               number   // HRV (ms)
-  wakingBPM?:         number   // 起床時心拍数
+  wakingBPM?:         number   // 起床時心拍数（heartRate フィールドから）
   sleepStartMinutes?: number   // 0:00 からの経過分
   sleepEndMinutes?:   number   // 0:00 からの経過分
 }

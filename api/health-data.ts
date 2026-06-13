@@ -339,10 +339,10 @@ interface AutoSleepStored {
   sleepScore?:        number   // AutoSleep 独自スコア (0–100)
   totalMinutes?:      number
   deepMinutes?:       number
-  remMinutes?:        number
+  qualityMinutes?:    number   // qualitySleep = 質の良い睡眠時間（分）
   awakenings?:        number   // 覚醒回数
   hrv?:               number
-  wakingBPM?:         number
+  wakingBPM?:         number   // heartRate フィールドから変換
   sleepStartMinutes?: number
   sleepEndMinutes?:   number
 }
