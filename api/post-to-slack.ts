@@ -44,6 +44,10 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   // GET: Notion ページ → Slack
   // =========================================================================
   if (req.method === 'GET') {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+    res.setHeader('CDN-Cache-Control', 'no-store')
+    res.setHeader('Vercel-CDN-Cache-Control', 'no-store')
+
     const notionKey = process.env['NOTION_API_KEY']
     const pageId    = process.env['BRIEFING_PAGE_ID'] ?? '3833ce20d6c0813e9a37fb9d31b370d2'
 
