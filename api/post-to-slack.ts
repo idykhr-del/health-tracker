@@ -71,9 +71,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return json(res, 500, { error: 'Failed to fetch Notion page', detail: String(e) })
     }
 
-    // ── ブロック → プレーンテキスト ───────────────────────────────────────────
-    const text = blocksToText(blocks).trim()
+    // ── code ブロックを先頭1つだけ抽出 ──────────────────────────────────────
+    const codeBlock = blocks.find(b => b.type === 'code')
+    if (!codeBlock) {
+      return json(res, 200, { ok: true, skipped: 'no code block' })
+    }
 
+    const text = richTextToString(codeBlock.code?.rich_text ?? []).trim()
     if (!text) {
       return json(res, 200, { ok: true, skipped: 'empty page' })
     }
