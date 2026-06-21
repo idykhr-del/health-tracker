@@ -130,10 +130,89 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try {
     await redis.set(`autosleep:sleep:${date}`, JSON.stringify(stored), { ex: 60 * 60 * 24 * 90 })
     console.log(`[sleep-ingest] saved autosleep:sleep:${date} =`, JSON.stringify(stored))
-    return json(res, 200, { status: 'ok', date, saved: stored })
   } catch (e) {
     return json(res, 500, { error: 'Redis write failed', detail: String(e) })
   }
+
+  // ── Notion へ直接同期（アプリを開かなくても反映される） ──────────────────────────
+  // 失敗してもレスポンスはブロックしない。Redis 保存は既に成功しているため、
+  // 同期のリトライは次回 Shortcuts 実行 or アプリ起動時の health-data 経由でも行われる。
+  let notionSynced = false
+  try {
+    notionSynced = await syncToNotion(date, stored)
+  } catch (e) {
+    console.error('[sleep-ingest] Notion sync failed:', e)
+  }
+
+  return json(res, 200, { status: 'ok', date, saved: stored, notionSynced })
+}
+
+// ── Notion 同期 ────────────────────────────────────────────────────────────────
+
+const NOTION_BASE    = 'https://api.notion.com/v1'
+const NOTION_VERSION = '2022-06-28'
+
+/**
+ * AutoSleep データを sleep_records DB に upsert する。
+ * NOTION_API_KEY / NOTION_SLEEP_DB_ID が未設定なら何もせず false を返す。
+ */
+async function syncToNotion(date: string, stored: AutoSleepStored): Promise<boolean> {
+  const apiKey = process.env['NOTION_API_KEY']
+  const dbId   = process.env['NOTION_SLEEP_DB_ID']
+  if (!apiKey || !dbId) {
+    console.warn('[sleep-ingest] Notion sync skipped: NOTION_API_KEY / NOTION_SLEEP_DB_ID not set')
+    return false
+  }
+
+  const props: Record<string, unknown> = {
+    Name: { title: [{ text: { content: date } }] },
+    date: { date:  { start: date } },
+    source: { select: { name: 'autosleep_shortcut' } },
+  }
+  if (stored.totalMinutes      != null) props['asleepMinutes']     = { number: stored.totalMinutes }
+  if (stored.deepMinutes       != null) props['deepMinutes']       = { number: stored.deepMinutes }
+  if (stored.qualityMinutes    != null) props['remMinutes']        = { number: stored.qualityMinutes }
+  if (stored.sleepStartMinutes != null) props['sleepStartMinutes'] = { number: stored.sleepStartMinutes }
+  if (stored.sleepScore        != null) props['sleepScore']        = { number: stored.sleepScore }
+  if (stored.awakenings        != null) props['awakenings']        = { number: stored.awakenings }
+  if (stored.hrv               != null) props['hrv']               = { number: stored.hrv }
+  if (stored.wakingBPM         != null) props['wakingBPM']         = { number: stored.wakingBPM }
+
+  const existingId = await findNotionPageId(date, apiKey, dbId)
+  if (existingId) {
+    await notionFetch(`/pages/${existingId}`, 'PATCH', apiKey, { properties: props })
+  } else {
+    await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+  }
+  console.log(`[sleep-ingest] Notion sleep_records synced for ${date}`)
+  return true
+}
+
+async function findNotionPageId(date: string, apiKey: string, dbId: string): Promise<string | null> {
+  const res = await notionFetch(`/databases/${dbId}/query`, 'POST', apiKey, {
+    page_size: 10,
+    filter: { property: 'date', date: { equals: date } },
+  })
+  const data = res.json as { results?: Array<{ id: string; archived: boolean }> }
+  const page = (data.results ?? []).find(p => !p.archived)
+  return page?.id ?? null
+}
+
+async function notionFetch(
+  path: string, method: string, apiKey: string, body?: unknown,
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  const res = await fetch(`${NOTION_BASE}${path}`, {
+    method,
+    headers: {
+      Authorization:    `Bearer ${apiKey}`,
+      'Notion-Version': NOTION_VERSION,
+      'Content-Type':   'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  let json: unknown
+  try { json = await res.json() } catch { json = null }
+  return { ok: res.ok, status: res.status, json }
 }
 
 // ── 型定義 ────────────────────────────────────────────────────────────────────
