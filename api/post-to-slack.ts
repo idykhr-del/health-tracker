@@ -77,10 +77,17 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return json(res, 200, { ok: true, skipped: 'no code block' })
     }
 
-    const text = richTextToString(codeBlock.code?.rich_text ?? []).trim()
-    if (!text) {
+    const codeText = richTextToString(codeBlock.code?.rich_text ?? []).trim()
+    if (!codeText) {
       return json(res, 200, { ok: true, skipped: 'empty page' })
     }
+
+    // ── メンションを先頭に付与（未設定時は U0B72CUC57V をデフォルト）────────
+    const mentionId = (process.env['SLACK_MENTION_USER_ID'] ?? 'U0B72CUC57V').trim()
+    const mention   = `<@${mentionId}>`
+    const text      = codeText.startsWith(mention)
+      ? codeText
+      : `${mention} ${codeText}`
 
     // ── Slack へ投稿 ──────────────────────────────────────────────────────────
     try {
