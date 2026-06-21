@@ -108,6 +108,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       console.log(`[health-data] sleep ${r.date}: asleepMin=${r.asleepMinutes} score=${r.sleepScore} awakenings=${r.awakenings} source=${r.source}`)
     })
 
+    // ── ④ Notion へ非同期で同期（レスポンスはブロックしない）──────────────────────
+    // sleepRecords は Withings/AutoSleep/HAE のマージ済みデータなので、
+    // 取り込み元ごとの優先順位をここで再実装する必要がない。
+    syncSleepRecordsToNotion(sleepRecords)
+      .catch(e => console.error('[health-data] Notion sleep sync failed:', e))
+
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ bodyRecords, sleepRecords, activityRecords, sleepStartHistory }))
 
@@ -172,6 +178,81 @@ async function syncWithingsIfStale(redis: Redis): Promise<void> {
   await Promise.all(ops)
 
   console.log(`[health-data] Withings sync done: ${byDate.size} days saved`)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notion 睡眠データ同期
+// ─────────────────────────────────────────────────────────────────────────────
+
+const NOTION_BASE    = 'https://api.notion.com/v1'
+const NOTION_VERSION = '2022-06-28'
+
+/**
+ * マージ済み sleepRecords を sleep_records DB に upsert する。
+ * NOTION_API_KEY / NOTION_SLEEP_DB_ID が未設定なら何もしない（既存環境を壊さない）。
+ * 1件ずつの失敗は内部で握り、他の日付の同期を止めない。
+ */
+async function syncSleepRecordsToNotion(records: MergedSleepRecord[]): Promise<void> {
+  const apiKey = process.env['NOTION_API_KEY']
+  const dbId   = process.env['NOTION_SLEEP_DB_ID']
+  if (!apiKey || !dbId || records.length === 0) return
+
+  await Promise.all(records.map(r => upsertSleepRecord(r, apiKey, dbId)))
+}
+
+async function upsertSleepRecord(r: MergedSleepRecord, apiKey: string, dbId: string): Promise<void> {
+  try {
+    const props: Record<string, unknown> = {
+      Name: { title: [{ text: { content: r.date } }] },
+      date: { date:  { start: r.date } },
+    }
+    if (r.asleepMinutes      != null) props['asleepMinutes']     = { number: r.asleepMinutes }
+    if (r.deepMinutes        != null) props['deepMinutes']       = { number: r.deepMinutes }
+    if (r.remMinutes         != null) props['remMinutes']        = { number: r.remMinutes }
+    if (r.awakeMinutes       != null) props['awakeMinutes']      = { number: r.awakeMinutes }
+    if (r.sleepStartMinutes  != null) props['sleepStartMinutes'] = { number: r.sleepStartMinutes }
+    if (r.sleepScore         != null) props['sleepScore']        = { number: r.sleepScore }
+    if (r.awakenings         != null) props['awakenings']        = { number: r.awakenings }
+    if (r.hrv                != null) props['hrv']               = { number: r.hrv }
+    if (r.wakingBPM          != null) props['wakingBPM']         = { number: r.wakingBPM }
+    if (r.source)                     props['source']            = { select: { name: r.source } }
+
+    const existingId = await findNotionSleepPageId(r.date, apiKey, dbId)
+    if (existingId) {
+      await notionFetch(`/pages/${existingId}`, 'PATCH', apiKey, { properties: props })
+    } else {
+      await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+    }
+  } catch (e) {
+    console.error(`[health-data] Notion sleep upsert failed for ${r.date}:`, e)
+  }
+}
+
+async function findNotionSleepPageId(date: string, apiKey: string, dbId: string): Promise<string | null> {
+  const res = await notionFetch(`/databases/${dbId}/query`, 'POST', apiKey, {
+    page_size: 10,
+    filter: { property: 'date', date: { equals: date } },
+  })
+  const data = res.json as { results?: Array<{ id: string; archived: boolean }> }
+  const page = (data.results ?? []).find(p => !p.archived)
+  return page?.id ?? null
+}
+
+async function notionFetch(
+  path: string, method: string, apiKey: string, body?: unknown,
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  const res = await fetch(`${NOTION_BASE}${path}`, {
+    method,
+    headers: {
+      Authorization:    `Bearer ${apiKey}`,
+      'Notion-Version': NOTION_VERSION,
+      'Content-Type':   'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  let json: unknown
+  try { json = await res.json() } catch { json = null }
+  return { ok: res.ok, status: res.status, json }
 }
 
 // meastype → フィールド名（Withings 公式仕様に準拠）
