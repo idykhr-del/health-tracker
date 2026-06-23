@@ -155,9 +155,74 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try { await Promise.all(ops) }
   catch (e) { return jsonRes(res, 500, { error: 'Redis write failed', detail: String(e) }) }
 
+  // ── ⑤ Notion body_records へ非同期 upsert ────────────────────────────────
+  for (const [date, v] of bodyMap) {
+    syncBodyToNotion(date, v).catch(e =>
+      console.error(`[health-webhook] notion body sync failed for ${date}:`, e),
+    )
+  }
+
   const saved = { body: bodyMap.size, sleep: sleepMap.size, activity: actMap.size }
   console.log('[health-webhook] saved:', saved)
   return jsonRes(res, 200, { status: 'ok', saved })
+}
+
+// ── Notion body_records 同期 ──────────────────────────────────────────────────
+
+const NOTION_BASE    = 'https://api.notion.com/v1'
+const NOTION_VERSION = '2022-06-28'
+
+async function syncBodyToNotion(date: string, body: StoredBody): Promise<void> {
+  const apiKey = process.env['NOTION_API_KEY']
+  const dbId   = process.env['NOTION_BODY_DB_ID']
+  if (!apiKey || !dbId) {
+    console.warn('[health-webhook] Notion body sync skipped: NOTION_API_KEY / NOTION_BODY_DB_ID not set')
+    return
+  }
+
+  const props: Record<string, unknown> = {
+    Name:   { title:     [{ text: { content: date } }] },
+    date:   { date:      { start: date } },
+    source: { rich_text: [{ text: { content: 'health_auto_export' } }] },
+  }
+  if (body.weight              != null) props['weight']              = { number: body.weight }
+  if (body.bodyFatPct          != null) props['bodyFat']             = { number: body.bodyFatPct }
+  if (body.leanBodyMass        != null) props['leanBodyMass']        = { number: body.leanBodyMass }
+  if (body.estimatedMuscleMass != null) props['estimatedMuscleMass'] = { number: body.estimatedMuscleMass }
+
+  const existing = await notionFindByDate(dbId, apiKey, date)
+  if (existing) {
+    await notionFetch(`/pages/${existing}`, 'PATCH', apiKey, { properties: props })
+  } else {
+    await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+  }
+  console.log(`[health-webhook] notion body saved: ${date}`)
+}
+
+async function notionFindByDate(dbId: string, apiKey: string, date: string): Promise<string | null> {
+  const r = await notionFetch(`/databases/${dbId}/query`, 'POST', apiKey, {
+    page_size: 10,
+    filter: { property: 'date', date: { equals: date } },
+  })
+  const data = r.json as { results?: Array<{ id: string; archived: boolean }> }
+  return (data.results ?? []).find(p => !p.archived)?.id ?? null
+}
+
+async function notionFetch(
+  path: string, method: string, apiKey: string, body?: unknown,
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  const res = await fetch(`${NOTION_BASE}${path}`, {
+    method,
+    headers: {
+      Authorization:    `Bearer ${apiKey}`,
+      'Notion-Version': NOTION_VERSION,
+      'Content-Type':   'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  let json: unknown
+  try { json = await res.json() } catch { json = null }
+  return { ok: res.ok, status: res.status, json }
 }
 
 // ── 保存型 ────────────────────────────────────────────────────────────────────
