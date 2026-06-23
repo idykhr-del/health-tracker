@@ -171,7 +171,7 @@ async function syncToNotion(date: string, stored: AutoSleepStored): Promise<bool
   }
   if (stored.totalMinutes      != null) props['asleepMinutes']     = { number: stored.totalMinutes }
   if (stored.deepMinutes       != null) props['deepMinutes']       = { number: stored.deepMinutes }
-  if (stored.qualityMinutes    != null) props['remMinutes']        = { number: stored.qualityMinutes }
+  if (stored.qualityMinutes    != null) props['qualityMinutes']    = { number: stored.qualityMinutes }
   if (stored.sleepStartMinutes != null) props['sleepStartMinutes'] = { number: stored.sleepStartMinutes }
   if (stored.sleepScore        != null) props['sleepScore']        = { number: stored.sleepScore }
   if (stored.awakenings        != null) props['awakenings']        = { number: stored.awakenings }
