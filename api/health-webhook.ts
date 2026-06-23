@@ -155,12 +155,20 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try { await Promise.all(ops) }
   catch (e) { return jsonRes(res, 500, { error: 'Redis write failed', detail: String(e) }) }
 
-  // ── ⑤ Notion body_records へ非同期 upsert ────────────────────────────────
+  // ── ⑤ Notion body_records へ逐次 upsert ─────────────────────────────────
+  // レート制限・コネクション枯渇を避けるため for...of で順番に処理する
+  let notionSuccess = 0
+  let notionFailed  = 0
   for (const [date, v] of bodyMap) {
-    syncBodyToNotion(date, v).catch(e =>
-      console.error(`[health-webhook] notion body sync failed for ${date}:`, e),
-    )
+    try {
+      await syncBodyToNotion(date, v)
+      notionSuccess++
+    } catch (e) {
+      notionFailed++
+      console.error(`[health-webhook] notion body sync failed for ${date}:`, e)
+    }
   }
+  console.log(`[health-webhook] notion body sync: ${notionSuccess} success, ${notionFailed} failed`)
 
   const saved = { body: bodyMap.size, sleep: sleepMap.size, activity: actMap.size }
   console.log('[health-webhook] saved:', saved)
@@ -190,13 +198,26 @@ async function syncBodyToNotion(date: string, body: StoredBody): Promise<void> {
   if (body.leanBodyMass        != null) props['leanBodyMass']        = { number: body.leanBodyMass }
   if (body.estimatedMuscleMass != null) props['estimatedMuscleMass'] = { number: body.estimatedMuscleMass }
 
-  const existing = await notionFindByDate(dbId, apiKey, date)
-  if (existing) {
-    await notionFetch(`/pages/${existing}`, 'PATCH', apiKey, { properties: props })
-  } else {
-    await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+  const delays = [1000, 2000, 4000]
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const existing = await notionFindByDate(dbId, apiKey, date)
+      if (existing) {
+        await notionFetch(`/pages/${existing}`, 'PATCH', apiKey, { properties: props })
+      } else {
+        await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+      }
+      console.log(`[health-webhook] notion body saved: ${date}`)
+      return
+    } catch (e) {
+      if (attempt < delays.length) {
+        console.warn(`[health-webhook] notion body sync attempt ${attempt + 1} failed for ${date}, retrying in ${delays[attempt]}ms:`, e)
+        await new Promise(r => setTimeout(r, delays[attempt]))
+      } else {
+        throw e
+      }
+    }
   }
-  console.log(`[health-webhook] notion body saved: ${date}`)
 }
 
 async function notionFindByDate(dbId: string, apiKey: string, date: string): Promise<string | null> {
@@ -211,18 +232,26 @@ async function notionFindByDate(dbId: string, apiKey: string, date: string): Pro
 async function notionFetch(
   path: string, method: string, apiKey: string, body?: unknown,
 ): Promise<{ ok: boolean; status: number; json: unknown }> {
-  const res = await fetch(`${NOTION_BASE}${path}`, {
-    method,
-    headers: {
-      Authorization:    `Bearer ${apiKey}`,
-      'Notion-Version': NOTION_VERSION,
-      'Content-Type':   'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  let json: unknown
-  try { json = await res.json() } catch { json = null }
-  return { ok: res.ok, status: res.status, json }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15_000)
+  try {
+    const res = await fetch(`${NOTION_BASE}${path}`, {
+      method,
+      headers: {
+        Authorization:    `Bearer ${apiKey}`,
+        'Notion-Version': NOTION_VERSION,
+        'Content-Type':   'application/json',
+      },
+      body:   body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    })
+    let json: unknown
+    try { json = await res.json() } catch { json = null }
+    if (!res.ok) throw new Error(`Notion API ${res.status}: ${JSON.stringify(json)}`)
+    return { ok: res.ok, status: res.status, json }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // ── 保存型 ────────────────────────────────────────────────────────────────────
