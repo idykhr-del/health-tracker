@@ -189,14 +189,13 @@ async function syncBodyToNotion(date: string, body: StoredBody): Promise<void> {
   }
 
   const props: Record<string, unknown> = {
-    Name:   { title:     [{ text: { content: date } }] },
-    date:   { date:      { start: date } },
-    source: { rich_text: [{ text: { content: 'health_auto_export' } }] },
+    Name:   { title:  [{ text: { content: date } }] },
+    date:   { date:   { start: date } },
+    source: { select: { name: 'withings' } },
   }
-  if (body.weight              != null) props['weight']              = { number: body.weight }
-  if (body.bodyFatPct          != null) props['bodyFat']             = { number: body.bodyFatPct }
-  if (body.leanBodyMass        != null) props['leanBodyMass']        = { number: body.leanBodyMass }
-  if (body.estimatedMuscleMass != null) props['estimatedMuscleMass'] = { number: body.estimatedMuscleMass }
+  if (body.weight              != null) props['weight']     = { number: body.weight }
+  if (body.bodyFatPct          != null) props['bodyFat']    = { number: body.bodyFatPct }
+  if (body.estimatedMuscleMass != null) props['muscleMass'] = { number: body.estimatedMuscleMass }
 
   const delays = [1000, 2000, 4000]
   for (let attempt = 0; attempt <= delays.length; attempt++) {
