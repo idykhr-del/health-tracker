@@ -2,6 +2,16 @@
   "buildCommand": "npm run build:all",
   "outputDirectory": "dist",
   "installCommand": "npm install",
+  "headers": [
+    {
+      "source": "/api/post-to-slack",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "CDN-Cache-Control", "value": "no-store" },
+        { "key": "Vercel-CDN-Cache-Control", "value": "no-store" }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/workout/:path*", "destination": "/workout/:path*" },
     { "source": "/api/:path*",     "destination": "/api/:path*" },
