@@ -134,17 +134,19 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return json(res, 500, { error: 'Redis write failed', detail: String(e) })
   }
 
-  // ── Notion へ直接同期（アプリを開かなくても反映される） ──────────────────────────
+  // ── Notion へ upsert 同期（アプリを開かなくても反映される） ─────────────────────
+  // date をキーに既存ページを探し、totalSleep が変わっていれば全項目を上書きする。
   // 失敗してもレスポンスはブロックしない。Redis 保存は既に成功しているため、
   // 同期のリトライは次回 Shortcuts 実行 or アプリ起動時の health-data 経由でも行われる。
-  let notionSynced = false
+  let action: NotionAction = 'unchanged'
   try {
-    notionSynced = await syncToNotion(date, stored)
+    action = await syncToNotion(date, stored)
   } catch (e) {
     console.error('[sleep-ingest] Notion sync failed:', e)
+    action = 'error'
   }
 
-  return json(res, 200, { status: 'ok', date, saved: stored, notionSynced })
+  return json(res, 200, { date, action })
 }
 
 // ── Notion 同期 ────────────────────────────────────────────────────────────────
@@ -152,16 +154,23 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 const NOTION_BASE    = 'https://api.notion.com/v1'
 const NOTION_VERSION = '2022-06-28'
 
+type NotionAction = 'created' | 'updated' | 'unchanged' | 'skipped' | 'error'
+
 /**
  * AutoSleep データを sleep_records DB に upsert する。
- * NOTION_API_KEY / NOTION_SLEEP_DB_ID が未設定なら何もせず false を返す。
+ *
+ *   既存ページなし         → 新規作成し 'created' を返す
+ *   既存あり・totalSleep 差 → 全項目を上書きし 'updated' を返す
+ *   既存あり・totalSleep 同 → Notion 更新をスキップし 'unchanged' を返す
+ *
+ * NOTION_API_KEY / NOTION_SLEEP_DB_ID が未設定なら何もせず 'skipped' を返す。
  */
-async function syncToNotion(date: string, stored: AutoSleepStored): Promise<boolean> {
+async function syncToNotion(date: string, stored: AutoSleepStored): Promise<NotionAction> {
   const apiKey = process.env['NOTION_API_KEY']
   const dbId   = process.env['NOTION_SLEEP_DB_ID']
   if (!apiKey || !dbId) {
     console.warn('[sleep-ingest] Notion sync skipped: NOTION_API_KEY / NOTION_SLEEP_DB_ID not set')
-    return false
+    return 'skipped'
   }
 
   const props: Record<string, unknown> = {
@@ -178,24 +187,51 @@ async function syncToNotion(date: string, stored: AutoSleepStored): Promise<bool
   if (stored.hrv               != null) props['hrv']               = { number: stored.hrv }
   if (stored.wakingBPM         != null) props['wakingBPM']         = { number: stored.wakingBPM }
 
-  const existingId = await findNotionPageId(date, apiKey, dbId)
-  if (existingId) {
-    await notionFetch(`/pages/${existingId}`, 'PATCH', apiKey, { properties: props })
-  } else {
+  const existing = await findNotionPage(date, apiKey, dbId)
+
+  // 既存なし → 新規作成
+  if (!existing) {
     await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+    console.log(`[sleep-ingest] Notion sleep_records created for ${date}`)
+    return 'created'
   }
-  console.log(`[sleep-ingest] Notion sleep_records synced for ${date}`)
-  return true
+
+  // 既存あり → totalSleep（asleepMinutes）を比較。一致すれば更新スキップ。
+  const newTotal = stored.totalMinutes ?? null
+  if (existing.asleepMinutes === newTotal) {
+    console.log(`[sleep-ingest] Notion sleep_records unchanged for ${date} (asleepMinutes=${newTotal})`)
+    return 'unchanged'
+  }
+
+  await notionFetch(`/pages/${existing.id}`, 'PATCH', apiKey, { properties: props })
+  console.log(`[sleep-ingest] Notion sleep_records updated for ${date} (${existing.asleepMinutes} → ${newTotal})`)
+  return 'updated'
 }
 
-async function findNotionPageId(date: string, apiKey: string, dbId: string): Promise<string | null> {
+/**
+ * date プロパティで既存ページを検索する。
+ * 同じ日付が複数ヒットした場合は最終更新が最も新しい 1 件を対象とする。
+ * 比較用に現在の asleepMinutes（totalSleep 相当）も返す。
+ */
+async function findNotionPage(
+  date: string, apiKey: string, dbId: string,
+): Promise<{ id: string; asleepMinutes: number | null } | null> {
   const res = await notionFetch(`/databases/${dbId}/query`, 'POST', apiKey, {
     page_size: 10,
     filter: { property: 'date', date: { equals: date } },
+    sorts:  [{ timestamp: 'last_edited_time', direction: 'descending' }],
   })
-  const data = res.json as { results?: Array<{ id: string; archived: boolean }> }
+  const data = res.json as {
+    results?: Array<{
+      id: string
+      archived: boolean
+      properties?: { asleepMinutes?: { number?: number | null } }
+    }>
+  }
   const page = (data.results ?? []).find(p => !p.archived)
-  return page?.id ?? null
+  if (!page) return null
+  const asleep = page.properties?.asleepMinutes?.number
+  return { id: page.id, asleepMinutes: typeof asleep === 'number' ? asleep : null }
 }
 
 async function notionFetch(
