@@ -495,7 +495,7 @@ function mergeSleepRecord(
     source:             as ? 'autosleep_shortcut' : 'health_auto_export',
     asleepMinutes:      totalMin,
     deepMinutes:        as?.deepMinutes   ?? hae?.deepMinutes,
-    remMinutes:         as?.remMinutes    ?? hae?.remMinutes,
+    remMinutes:         as?.qualityMinutes ?? hae?.remMinutes,  // AutoSleepはREM相当をqualityMinutesに保持
     sleepStartMinutes:  as?.sleepStartMinutes ?? hae?.sleepStartMinutes,
     awakeMinutes:       hae?.awakeMinutes,          // HAE から（AutoSleepは覚醒時間でなく回数）
     sleepScore:         as?.sleepScore,             // AutoSleep 独自スコア
