@@ -66,6 +66,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try { payload = JSON.parse(rawBody) as Record<string, unknown> }
   catch { return json(res, 400, { error: 'Invalid JSON' }) }
 
+  // ── action=notion-write: 汎用 Notion ページ書き込み ────────────────────────────
+  // Notion MCP 経由の rich_text 書き込みで "[" "{" 直前に "\" が混入する不具合を回避する
+  // 専用経路。sleep 取り込みと同じ POST/認証/NOTION_API_KEY/notionFetch を再利用する。
+  if (payload['action'] === 'notion-write') {
+    return await handleNotionWrite(res, payload)
+  }
+
   // ── date 正規化 ───────────────────────────────────────────────────────────────
   const rawDate = (payload['date'] as string | undefined) ?? ''
   const date    = normalizeDate(rawDate)
@@ -249,6 +256,88 @@ async function notionFetch(
   let json: unknown
   try { json = await res.json() } catch { json = null }
   return { ok: res.ok, status: res.status, json }
+}
+
+// ── 汎用 Notion 書き込み（action=notion-write）─────────────────────────────────
+//
+// body: { action:"notion-write", pageId: string, properties: { [name]: string|number } }
+//   プロパティ名・型はペイロードから動的に組み立てる（ハードコードしない）:
+//     string → rich_text  { rich_text: [{ text: { content: value } }] }
+//     number → number     { number: value }
+//   rich_text 文字列が "[" or "{" で始まる場合は JSON.parse で妥当性検証し、
+//   失敗したら 400 で書き込み全体を拒否（壊れた JSON 保存の再発防止）。
+//   認証は sleep-ingest と同じトークン、書き込みは NOTION_API_KEY + notionFetch を再利用。
+
+const RICH_TEXT_CHUNK = 1900  // Notion rich_text 1オブジェクトの content 上限は 2000 文字
+
+async function handleNotionWrite(res: ServerResponse, payload: Record<string, unknown>) {
+  const apiKey = process.env['NOTION_API_KEY']
+  if (!apiKey) return json(res, 500, { error: 'NOTION_API_KEY is not configured' })
+
+  const pageId = payload['pageId']
+  if (typeof pageId !== 'string' || !pageId.trim()) {
+    return json(res, 400, { error: 'pageId (non-empty string) is required' })
+  }
+  const properties = payload['properties']
+  if (properties == null || typeof properties !== 'object' || Array.isArray(properties)) {
+    return json(res, 400, { error: 'properties (object) is required' })
+  }
+
+  const built = buildNotionProperties(properties as Record<string, unknown>)
+  if (built.error) return json(res, 400, { error: built.error })
+  if (Object.keys(built.props!).length === 0) {
+    return json(res, 400, { error: 'properties is empty; nothing to write' })
+  }
+
+  console.log('[notion-write] pageId:', pageId, 'props:', Object.keys(built.props!).join(', '))
+
+  const result = await notionFetch(`/pages/${pageId}`, 'PATCH', apiKey, { properties: built.props })
+  if (!result.ok) {
+    const err = result.json as { code?: string; message?: string } | null
+    console.error('[notion-write] Notion PATCH failed:', result.status, err?.code, err?.message)
+    return json(res, result.status || 502, {
+      error: 'Notion write failed', status: result.status, code: err?.code, message: err?.message,
+    })
+  }
+  const id = (result.json as { id?: string } | null)?.id
+  console.log('[notion-write] updated page', id ?? pageId)
+  return json(res, 200, { ok: true, pageId: id ?? pageId, updated: Object.keys(built.props!) })
+}
+
+/** ペイロードの properties を Notion プロパティ値へ変換（string→rich_text / number→number）。 */
+function buildNotionProperties(input: Record<string, unknown>): { props?: Record<string, unknown>; error?: string } {
+  const props: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(input)) {
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return { error: `Property "${name}": number is not finite` }
+      props[name] = { number: value }
+    } else if (typeof value === 'string') {
+      const head = value.trimStart()
+      if (head.startsWith('[') || head.startsWith('{')) {
+        try {
+          JSON.parse(value)
+        } catch {
+          return {
+            error: `Property "${name}": value starts with "[" or "{" but is not valid JSON. ` +
+              `Write rejected to avoid saving broken JSON.`,
+          }
+        }
+      }
+      props[name] = { rich_text: richTextChunks(value) }
+    } else {
+      return { error: `Property "${name}": unsupported value type "${value === null ? 'null' : typeof value}" (only string or number)` }
+    }
+  }
+  return { props }
+}
+
+/** 文字列を Notion rich_text の text オブジェクト配列へ（2000字上限対策で ≤1900 に分割）。 */
+function richTextChunks(s: string): { text: { content: string } }[] {
+  const chunks: { text: { content: string } }[] = []
+  for (let i = 0; i < s.length; i += RICH_TEXT_CHUNK) {
+    chunks.push({ text: { content: s.slice(i, i + RICH_TEXT_CHUNK) } })
+  }
+  return chunks.length ? chunks : [{ text: { content: '' } }]
 }
 
 // ── 型定義 ────────────────────────────────────────────────────────────────────
