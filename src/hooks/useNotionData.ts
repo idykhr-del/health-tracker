@@ -37,7 +37,9 @@ async function readJson<T>(url: string): Promise<JsonResult<T>> {
     try {
       parsed = JSON.parse(text) as T
     } catch {
-      return { data: null, error: `${res.status} ${text.slice(0, 120)}`.trim() }
+      // Vercel のエラーページ等、JSON でないレスポンス
+      console.warn(`[useNotionData] non-JSON response from ${url}:`, text.slice(0, 300))
+      return { data: null, error: `HTTP ${res.status}（JSON でないレスポンス）` }
     }
 
     // API 自身がエラーを返した場合（200 でも error フィールドを持つケースを含む）
