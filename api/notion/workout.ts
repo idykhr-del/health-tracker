@@ -7,8 +7,12 @@ import type { IncomingMessage, ServerResponse } from 'http'
  *
  * Env vars:
  *   NOTION_API_KEY        — Notion integration secret
- *   NOTION_WORKOUT_DB_ID  — workout_sessions DB の ID
- *                           (デフォルト: b651703d-758f-46fa-8bc3-5ec3272aa838)
+ *   NOTION_WORKOUT_DB_ID  — workout_sessions の "database" ID
+ *                           (デフォルト: 1a8d52f6-8126-4710-afc8-c8de54fc96b3)
+ *                           ※ b651703d-758f-46fa-8bc3-5ec3272aa838 は同じ DB の
+ *                             data source (collection) ID。REST の
+ *                             /v1/databases/{id}/query は database ID しか
+ *                             受け付けず、collection ID を渡すと 404 になる。
  *
  * 実 DB スキーマ（2026-08 時点）:
  *   Name        (title)  — セッション名（"2026-06-24 07:01" 形式）
@@ -28,7 +32,7 @@ import type { IncomingMessage, ServerResponse } from 'http'
 
 const NOTION_BASE    = 'https://api.notion.com/v1'
 const NOTION_VERSION = '2022-06-28'
-const WORKOUT_DB_ID  = process.env['NOTION_WORKOUT_DB_ID'] ?? 'b651703d-758f-46fa-8bc3-5ec3272aa838'
+const WORKOUT_DB_ID  = process.env['NOTION_WORKOUT_DB_ID'] ?? '1a8d52f6-8126-4710-afc8-c8de54fc96b3'
 
 // ── DB プロパティ名（大文字小文字は Notion 側と厳密に一致させること） ──────────
 const PROP_NAME       = 'Name'
