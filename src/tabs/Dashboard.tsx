@@ -17,6 +17,7 @@ interface Props {
   // Notion
   notionWorkouts:     NotionWorkout[]
   stravaActivities:   StravaActivity[]
+  notionError:        string | null
 }
 
 interface StravaActivity {
@@ -107,7 +108,7 @@ function EstBadge() {
 export default function Dashboard({
   data, sessions, onNavigateToData,
   withingsSyncStatus, withingsLastSync, onWithingsSyncNow,
-  activityRecords, sleepStartHistory, notionWorkouts, stravaActivities,
+  activityRecords, sleepStartHistory, notionWorkouts, stravaActivities, notionError,
 }: Props) {
   const { bodyRecords, sleepRecords, goals } = data
   const hasAnyData = bodyRecords.length > 0 || sleepRecords.length > 0 || sessions.length > 0
@@ -196,6 +197,14 @@ export default function Dashboard({
             {withingsSyncStatus === 'error' && (
               <button onClick={onWithingsSyncNow} className="underline ml-2">再試行</button>
             )}
+          </div>
+        )}
+
+        {/* Notion 取得エラー — 「0件」と「取得失敗」を区別するための控えめな表示 */}
+        {notionError && (
+          <div className="rounded-xl px-4 py-2 text-xs bg-amber-100 text-amber-700">
+            <span>⚠ トレーニングデータを取得できませんでした（表示は不完全です）</span>
+            <span className="block mt-0.5 opacity-70 break-all">{notionError}</span>
           </div>
         )}
 

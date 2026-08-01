@@ -61,7 +61,7 @@ export default function App() {
   const { haeBody, haeSleep, haeActivity, sleepStartHistory } = useHealthAutoExport()
 
   // ── Notion (workout + Strava) ─────────────────────────────────────────────
-  const { notionWorkouts, stravaActivities } = useNotionData()
+  const { notionWorkouts, stravaActivities, notionError } = useNotionData()
 
   // Withings / localStorage データに HAE データをマージ（Withings 優先）
   const mergedData = useMemo(() => ({
@@ -168,6 +168,7 @@ export default function App() {
                 sleepStartHistory={sleepStartHistory}
                 notionWorkouts={notionWorkouts}
                 stravaActivities={stravaActivities}
+                notionError={notionError}
               />
             )}
             {t.key === 'charts' && (

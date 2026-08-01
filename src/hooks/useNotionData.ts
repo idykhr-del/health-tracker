@@ -18,6 +18,40 @@ interface UseNotionDataReturn {
   notionRefresh:   () => void
 }
 
+interface JsonResult<T> {
+  data:  T | null
+  error: string | null
+}
+
+/**
+ * 1エンドポイントを取得して JSON を読む。ネットワークエラー・非 2xx・
+ * JSON でないレスポンス（Vercel のエラーページ等）をすべて error に畳み込み、
+ * 呼び出し側へ throw しない。
+ */
+async function readJson<T>(url: string): Promise<JsonResult<T>> {
+  try {
+    const res = await fetch(url)
+    const text = await res.text()
+
+    let parsed: T
+    try {
+      parsed = JSON.parse(text) as T
+    } catch {
+      return { data: null, error: `${res.status} ${text.slice(0, 120)}`.trim() }
+    }
+
+    // API 自身がエラーを返した場合（200 でも error フィールドを持つケースを含む）
+    const apiError = (parsed as { error?: string } | null)?.error
+    if (!res.ok || apiError) {
+      return { data: null, error: apiError ?? `HTTP ${res.status}` }
+    }
+
+    return { data: parsed, error: null }
+  } catch (e) {
+    return { data: null, error: String(e) }
+  }
+}
+
 /**
  * Notion DB からトレーニング・Strava データを取得するフック。
  * /api/notion/workout と /api/notion/strava を並列で呼び出す。
@@ -32,20 +66,27 @@ export function useNotionData(): UseNotionDataReturn {
     setNotionLoading(true)
     setNotionError(null)
     try {
-      const [workoutRes, stravaRes] = await Promise.all([
-        fetch('/api/notion/workout'),
-        fetch('/api/notion/strava'),
+      // 並列取得は維持しつつ、片方が失敗しても もう片方は表示できるように
+      // それぞれ独立して読み取る
+      const [workout, strava] = await Promise.all([
+        readJson<{ workouts?: NotionWorkout[] }>('/api/notion/workout'),
+        readJson<{ activities?: StravaActivity[] }>('/api/notion/strava'),
       ])
 
-      const workoutData = await workoutRes.json() as { workouts?: NotionWorkout[]; error?: string }
-      const stravaData  = await stravaRes.json()  as { activities?: StravaActivity[]; error?: string }
+      if (workout.error) console.warn('[useNotionData] workout:', workout.error)
+      if (strava.error)  console.warn('[useNotionData] strava:',  strava.error)
 
-      if (workoutData.error) console.warn('[useNotionData] workout:', workoutData.error)
-      if (stravaData.error)  console.warn('[useNotionData] strava:',  stravaData.error)
+      setNotionWorkouts(   workout.data?.workouts   ?? [])
+      setStravaActivities( strava.data?.activities  ?? [])
 
-      setNotionWorkouts(   workoutData.workouts   ?? [])
-      setStravaActivities( stravaData.activities  ?? [])
+      const failures = [
+        workout.error ? `トレーニング: ${workout.error}` : null,
+        strava.error  ? `Strava: ${strava.error}`        : null,
+      ].filter((s): s is string => s !== null)
+
+      setNotionError(failures.length > 0 ? failures.join(' / ') : null)
     } catch (e) {
+      // readJson は throw しない想定だが、念のため
       console.warn('[useNotionData] error:', e)
       setNotionError(String(e))
     } finally {
