@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http'
+import { createHash } from 'node:crypto'
 import { Redis } from '@upstash/redis'
 
 /**
@@ -41,8 +42,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' })
 
   // ── 認証 ─────────────────────────────────────────────────────────────────────
-  const expectedToken = process.env['SLEEP_INGEST_TOKEN']
-  if (!expectedToken) return json(res, 500, { error: 'SLEEP_INGEST_TOKEN is not configured' })
+  // 環境変数・ショートカット双方で末尾改行や前後空白が混入しやすいため、両側を
+  // trim() してから比較する。判定・以降の処理はすべて trim 後の値を使う。
+  const expectedRaw = process.env['SLEEP_INGEST_TOKEN']
+  if (!expectedRaw) return json(res, 500, { error: 'SLEEP_INGEST_TOKEN is not configured' })
+  const expectedToken = expectedRaw.trim()
 
   // URL からトークン取得（Apple Shortcuts は URL 埋め込みが最も簡単）
   const url      = req.url ?? ''
@@ -50,11 +54,33 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const qs       = qsStart >= 0 ? new URLSearchParams(url.slice(qsStart)) : null
   const tokenQs  = qs?.get('token') ?? ''
   const tokenHdr = (req.headers['x-ingest-token'] as string | undefined) ?? ''
-  const token    = tokenQs || tokenHdr
+  const tokenRaw = tokenQs || tokenHdr
+  const token    = tokenRaw.trim()
 
   if (!token || token !== expectedToken) {
-    console.warn('[sleep-ingest] Auth failed. provided token length:', token.length)
+    // 診断用フィンガープリント。値そのもの・その部分文字列は絶対に出さない
+    // （Vercel はクエリパラメータをリクエストログに記録するため二重露出になる）。
+    console.warn('[sleep-ingest] Auth failed.', JSON.stringify({
+      providedLen:         tokenRaw.length,
+      providedLenTrimmed:  token.length,
+      expectedLen:         expectedRaw.length,
+      expectedLenTrimmed:  expectedToken.length,
+      providedFp:          fp(token),
+      expectedFp:          fp(expectedToken),
+      // 判定自体が trim 後の比較なので、ここに到達した時点で必ず false。
+      // 「trim では救済できない＝値が別物」であることを明示するために出す。
+      wouldMatchAfterTrim: token === expectedToken,
+    }))
     return json(res, 401, { error: 'Unauthorized' })
+  }
+
+  // trim でのみ一致した場合は、どちら側に空白が混入しているかを残す。
+  if (tokenRaw !== expectedRaw) {
+    console.warn('[sleep-ingest] Auth matched only after trim(); surrounding whitespace present.', JSON.stringify({
+      providedLen: tokenRaw.length,
+      expectedLen: expectedRaw.length,
+      trimmedLen:  token.length,
+    }))
   }
 
   // ── ボディ読み取り ────────────────────────────────────────────────────────────
@@ -145,15 +171,24 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   // date をキーに既存ページを探し、totalSleep が変わっていれば全項目を上書きする。
   // 失敗してもレスポンスはブロックしない。Redis 保存は既に成功しているため、
   // 同期のリトライは次回 Shortcuts 実行 or アプリ起動時の health-data 経由でも行われる。
-  let action: NotionAction = 'unchanged'
+  let sync: NotionSyncResult
   try {
-    action = await syncToNotion(date, stored)
+    sync = await syncToNotion(date, stored)
   } catch (e) {
     console.error('[sleep-ingest] Notion sync failed:', e)
-    action = 'error'
+    sync = { action: 'error', notionError: { status: 0, message: String(e) } }
   }
 
-  return json(res, 200, { date, action })
+  return json(res, 200, {
+    date,
+    action: sync.action,
+    ...(sync.notionError ? { notionError: sync.notionError } : {}),
+  })
+}
+
+/** トークンのフィンガープリント（SHA-256 hex 先頭 8 文字）。値の復元はできない。 */
+function fp(s: string): string {
+  return createHash('sha256').update(s).digest('hex').slice(0, 8)
 }
 
 // ── Notion 同期 ────────────────────────────────────────────────────────────────
@@ -163,21 +198,27 @@ const NOTION_VERSION = '2022-06-28'
 
 type NotionAction = 'created' | 'updated' | 'unchanged' | 'skipped' | 'error'
 
+/** Notion 側のエラー概要。ショートカットの実行結果にそのまま出す（トークン類は含めない）。 */
+interface NotionErrorInfo { status: number; code?: string; message?: string }
+
+interface NotionSyncResult { action: NotionAction; notionError?: NotionErrorInfo }
+
 /**
  * AutoSleep データを sleep_records DB に upsert する。
  *
  *   既存ページなし         → 新規作成し 'created' を返す
  *   既存あり・totalSleep 差 → 全項目を上書きし 'updated' を返す
  *   既存あり・totalSleep 同 → Notion 更新をスキップし 'unchanged' を返す
+ *   Notion が HTTP エラーを返した → 'error' + notionError を返す
  *
  * NOTION_API_KEY / NOTION_SLEEP_DB_ID が未設定なら何もせず 'skipped' を返す。
  */
-async function syncToNotion(date: string, stored: AutoSleepStored): Promise<NotionAction> {
+async function syncToNotion(date: string, stored: AutoSleepStored): Promise<NotionSyncResult> {
   const apiKey = process.env['NOTION_API_KEY']
   const dbId   = process.env['NOTION_SLEEP_DB_ID']
   if (!apiKey || !dbId) {
     console.warn('[sleep-ingest] Notion sync skipped: NOTION_API_KEY / NOTION_SLEEP_DB_ID not set')
-    return 'skipped'
+    return { action: 'skipped' }
   }
 
   const props: Record<string, unknown> = {
@@ -198,21 +239,35 @@ async function syncToNotion(date: string, stored: AutoSleepStored): Promise<Noti
 
   // 既存なし → 新規作成
   if (!existing) {
-    await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+    const created = await notionFetch('/pages', 'POST', apiKey, { parent: { database_id: dbId }, properties: props })
+    if (!created.ok) return notionFailure('create', date, created)
     console.log(`[sleep-ingest] Notion sleep_records created for ${date}`)
-    return 'created'
+    return { action: 'created' }
   }
 
   // 既存あり → totalSleep（asleepMinutes）を比較。一致すれば更新スキップ。
   const newTotal = stored.totalMinutes ?? null
   if (existing.asleepMinutes === newTotal) {
     console.log(`[sleep-ingest] Notion sleep_records unchanged for ${date} (asleepMinutes=${newTotal})`)
-    return 'unchanged'
+    return { action: 'unchanged' }
   }
 
-  await notionFetch(`/pages/${existing.id}`, 'PATCH', apiKey, { properties: props })
+  const updated = await notionFetch(`/pages/${existing.id}`, 'PATCH', apiKey, { properties: props })
+  if (!updated.ok) return notionFailure('update', date, updated)
   console.log(`[sleep-ingest] Notion sleep_records updated for ${date} (${existing.asleepMinutes} → ${newTotal})`)
-  return 'updated'
+  return { action: 'updated' }
+}
+
+/** notionFetch の失敗レスポンスをログに出し、'error' + エラー概要へ変換する。 */
+function notionFailure(
+  op: string, date: string, result: { status: number; json: unknown },
+): NotionSyncResult {
+  const err = result.json as { code?: string; message?: string } | null
+  console.error(`[sleep-ingest] Notion sleep_records ${op} failed for ${date}:`, result.status, err?.code, err?.message)
+  return {
+    action: 'error',
+    notionError: { status: result.status, code: err?.code, message: err?.message },
+  }
 }
 
 /**
