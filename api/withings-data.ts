@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
 import { Redis } from '@upstash/redis'
+import { jstIsoString } from '../lib/jst.js'
 import {
   getValidAccessToken,
   readTokens,
@@ -326,9 +327,7 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
   }>()
 
   grps.forEach(grp => {
-    // UTC → JST (+9h)
-    const jstMs  = grp.date * 1000 + 9 * 3600 * 1000
-    const jstIso = new Date(jstMs).toISOString()
+    const jstIso = jstIsoString(new Date(grp.date * 1000))
     const date   = jstIso.slice(0, 10)   // YYYY-MM-DD
     const time   = jstIso.slice(11, 16)  // HH:MM
 

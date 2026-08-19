@@ -5,6 +5,7 @@ import {
 } from 'recharts'
 import type { BodyData, WorkoutSession } from '../types'
 import EmptyState from '../components/ui/EmptyState'
+import { jstDateKey } from '../../lib/jst'
 
 type Period = '2w' | '1m' | '3m' | 'all'
 type ChartType = 'body' | 'sleep' | 'composite' | 'detail'
@@ -46,7 +47,7 @@ export default function Charts({ data, sessions, onNavigateToData }: Props) {
   }
 
   const cutoff = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = jstDateKey()
     return period === 'all' ? '2000-01-01' : addDays(today, -PERIOD_DAYS[period])
   }, [period])
 

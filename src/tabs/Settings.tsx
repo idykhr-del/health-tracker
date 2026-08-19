@@ -3,6 +3,7 @@ import type { Goals, AppSettings, WithingsSyncStatus, AutoSleepLastImport } from
 import { exportBodyCSV, exportSleepCSV, downloadFile } from '../utils/export'
 import type { BodyRecord, SleepRecord } from '../types'
 import { migrateBodyRecords, hasMigratedBody, markMigratedBody } from '../utils/notionBodySync'
+import { jstDateKey } from '../../lib/jst'
 
 interface Props {
   goals: Goals
@@ -362,19 +363,19 @@ export default function Settings({
 
   const handleExportBodyCSV = () => {
     if (!bodyRecords.length) { showToast('体組成データがありません', 'error'); return }
-    downloadFile(exportBodyCSV(bodyRecords), `body_data_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv')
+    downloadFile(exportBodyCSV(bodyRecords), `body_data_${jstDateKey()}.csv`, 'text/csv')
     showToast('体組成CSVをダウンロードしました')
   }
 
   const handleExportSleepCSV = () => {
     if (!sleepRecords.length) { showToast('睡眠データがありません', 'error'); return }
-    downloadFile(exportSleepCSV(sleepRecords), `sleep_data_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv')
+    downloadFile(exportSleepCSV(sleepRecords), `sleep_data_${jstDateKey()}.csv`, 'text/csv')
     showToast('睡眠CSVをダウンロードしました')
   }
 
   const handleExportAllJSON = () => {
     const all = { bodyRecords, sleepRecords, goals, settings }
-    downloadFile(JSON.stringify(all, null, 2), `health_data_${new Date().toISOString().slice(0,10)}.json`, 'application/json')
+    downloadFile(JSON.stringify(all, null, 2), `health_data_${jstDateKey()}.json`, 'application/json')
     showToast('全データJSONをダウンロードしました')
   }
 

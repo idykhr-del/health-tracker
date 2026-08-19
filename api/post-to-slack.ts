@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { Redis } from '@upstash/redis'
+import { jstDateKey } from '../lib/jst.js'
 
 /**
  * POST /api/post-to-slack
@@ -299,11 +300,6 @@ function getRedis(): Redis | null {
   return new Redis({ url, token })
 }
 
-/** JST の YYYY-MM-DD */
-function jstDateKey(d: Date): string {
-  return new Date(d.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)
-}
-
 /** Slack へ投稿した本文を Alexa 用に保存する */
 async function saveBriefing(text: string): Promise<void> {
   const redis = getRedis()
@@ -341,7 +337,7 @@ async function handleFeed(res: ServerResponse, key: string): Promise<void> {
   }
 
   // データが無くても 200 を返す（Alexa 側でエラー表示にならないようにする）
-  const dateKey  = stored?.dateKey ?? jstDateKey(new Date())
+  const dateKey  = stored?.dateKey ?? jstDateKey()
   const mainText = stored?.text ? sanitizeForSpeech(stored.text) : NO_DATA_TEXT
 
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')

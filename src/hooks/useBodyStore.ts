@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { loadBodySync, loadBodyAsync, saveBody, clearBody } from '../utils/storage'
 import type { BodyData, BodyRecord, SleepRecord, Goals, AutoSleepLastImport } from '../types'
 import { loadBodyFromNotion, syncBodyRecord, mergeBodyWithNotion } from '../utils/notionBodySync'
+import { jstDateKey } from '../../lib/jst'
 
 const AUTOSLEEP_LAST_IMPORT_KEY = 'autosleep_last_import'
 
@@ -178,7 +179,7 @@ export function useBodyStore() {
     method: 'A' | 'B',
     count:  number,
   ) => {
-    const date = new Date().toISOString().slice(0, 10)
+    const date = jstDateKey()
     setAutoSleepLastImport(prev => {
       const next = { ...prev, [method]: { date, count } }
       saveAutoSleepLastImport(next)

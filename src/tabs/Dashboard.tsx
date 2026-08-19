@@ -3,6 +3,7 @@ import { calcWeeklyChange } from '../utils/analytics'
 import SummaryCard from '../components/ui/SummaryCard'
 import ProgressBar from '../components/ui/ProgressBar'
 import EmptyState from '../components/ui/EmptyState'
+import { jstDateKey } from '../../lib/jst'
 
 interface Props {
   data:               BodyData
@@ -125,7 +126,7 @@ export default function Dashboard({
   }
 
   const weekChange  = calcWeeklyChange(bodyRecords)
-  const today       = new Date().toISOString().slice(0, 10)
+  const today       = jstDateKey()
   const yesterday   = addDays(today, -1)
   const sevenDaysAgo = addDays(today, -7)
 

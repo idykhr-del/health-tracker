@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { Redis } from '@upstash/redis'
 import { getValidAccessToken } from '../lib/withings.js'
+import { jstDateKey } from '../lib/jst.js'
 
 /**
  * GET /api/health-data
@@ -277,8 +278,7 @@ async function fetchWithingsMeasures(
   // grpid → セッション（同日は最多フィールドを採用）
   const sessions = new Map<number, { date: string; fields: WithingsStoredBody }>()
   for (const grp of allGrps) {
-    const jstMs = grp.date * 1000 + 9 * 3600 * 1000
-    const date  = new Date(jstMs).toISOString().slice(0, 10)
+    const date  = jstDateKey(new Date(grp.date * 1000))
     const fields: WithingsStoredBody = {}
     for (const m of grp.measures) {
       const field = WITHINGS_MEAS_FIELD[m.type]

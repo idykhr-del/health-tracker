@@ -1,4 +1,5 @@
 import type { BodyRecord, SleepRecord, WorkoutSession } from '../types'
+import { jstDateKey } from '../../lib/jst'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -184,7 +185,7 @@ export function calcExerciseEffectiveness(
   sessions: WorkoutSession[],
 ): ExerciseEffectivenessRow[] {
   const bodyMap = new Map(bodyRecords.map(r => [r.date, r.muscleMass]))
-  const now = new Date().toISOString().slice(0, 10)
+  const now = jstDateKey()
   const cutoff = addDays(now, -14)
 
   const recentSessions = sessions.filter(s => s.date >= cutoff)
