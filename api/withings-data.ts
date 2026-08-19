@@ -4,7 +4,6 @@ import { Redis } from '@upstash/redis'
 import {
   getValidAccessToken,
   readTokens,
-  saveTokens,
   clearTokens,
   readAuthError,
   readLastSync,
@@ -20,7 +19,6 @@ import {
  *   GET  /api/withings-data?action=status    → 同上
  *   POST /api/withings-data                  → Withings から取得して Redis に保存
  *   POST /api/withings-data?action=disconnect→ Redis のトークンを削除
- *   POST /api/withings-data?action=migrate   → 旧 localStorage トークンを Redis に seed
  *
  * status レスポンス:
  *   { connected: boolean, expires_at: number|null, last_sync: number|null, auth_error: string|null }
@@ -58,7 +56,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   if (req.method === 'GET' || action === 'status') return handleStatus(res, redis)
   if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' })
   if (action === 'disconnect') return handleDisconnect(res, redis)
-  if (action === 'migrate')    return handleMigrate(req, res, redis)
   return handleSync(res, redis)
 }
 
@@ -88,39 +85,6 @@ async function handleDisconnect(res: ServerResponse, redis: Redis) {
   await clearTokens(redis)
   console.log('[withings-data] disconnected: tokens removed from Redis')
   return json(res, 200, { ok: true })
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// POST ?action=migrate: 旧 localStorage トークンを Redis に seed（1回限りの移行用）
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function handleMigrate(req: IncomingMessage, res: ServerResponse, redis: Redis) {
-  let parsed: { access_token?: string; refresh_token?: string; expires_at?: number }
-  try {
-    parsed = JSON.parse(await readBody(req)) as typeof parsed
-  } catch (e) {
-    return json(res, 400, { error: 'invalid_body', detail: String(e) })
-  }
-
-  const { access_token, refresh_token } = parsed
-  if (!access_token || !refresh_token) {
-    return json(res, 400, { error: 'access_token / refresh_token are required' })
-  }
-
-  // 既に Redis 側にトークンがあればそちらが正。上書きしない。
-  const existing = await readTokens(redis)
-  if (existing) {
-    console.log('[withings-data] migrate skipped: Redis already has tokens')
-    return json(res, 200, { ok: true, seeded: false })
-  }
-
-  await saveTokens(redis, {
-    access_token,
-    refresh_token,
-    expires_at: parsed.expires_at ?? Math.floor(Date.now() / 1000) + 10800,
-  })
-  console.log('[withings-data] migrate: legacy localStorage tokens seeded into Redis')
-  return json(res, 200, { ok: true, seeded: true })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -432,13 +396,4 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
 function json(res: ServerResponse, status: number, body: object) {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = ''
-    req.on('data', (chunk: Buffer) => { data += chunk.toString() })
-    req.on('end',  () => resolve(data))
-    req.on('error', reject)
-  })
 }

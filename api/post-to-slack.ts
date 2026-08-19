@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http'
+import { Redis } from '@upstash/redis'
 
 /**
  * POST /api/post-to-slack
@@ -11,11 +12,19 @@ import type { IncomingMessage, ServerResponse } from 'http'
  *   → Notion ページ (BRIEFING_PAGE_ID) の本文をプレーンテキスト化して Slack へ投稿
  *   Cowork などの GET のみ可能なサンドボックスからのトリガー用。
  *
+ * GET /api/post-to-slack?action=feed&k=<ALEXA_FEED_KEY>
+ *   認証: ?k=<ALEXA_FEED_KEY>（不一致・未設定は 404）
+ *   → 直近の Slack 投稿本文を Alexa フラッシュブリーフィング形式の JSON で返す
+ *   Vercel Hobby の 12 関数上限のため、専用ファイルを作らずここに同居させている。
+ *
  * Env vars:
  *   SLACK_RELAY_TOKEN   — 認証トークン（GET/POST 共通）
  *   SLACK_WEBHOOK_URL   — Slack Incoming Webhook URL
  *   NOTION_API_KEY      — Notion Integration トークン
  *   BRIEFING_PAGE_ID    — 本文を読み取る Notion ページ ID
+ *   ALEXA_FEED_KEY      — フラッシュブリーフィング取得用の秘密キー
+ *   KV_REST_API_URL     — Upstash Redis（ブリーフィング本文の保存先）
+ *   KV_REST_API_TOKEN   — 同上
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -28,6 +37,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const url     = req.url ?? ''
   const qsStart = url.indexOf('?')
   const qs      = qsStart >= 0 ? new URLSearchParams(url.slice(qsStart)) : null
+
+  // ── Alexa フラッシュブリーフィング用フィード ─────────────────────────────────
+  // Alexa は SLACK_RELAY_TOKEN を持てないので、共通認証より前に分岐する。
+  if (req.method === 'GET' && qs?.get('action') === 'feed') {
+    return handleFeed(res, qs.get('k') ?? '')
+  }
 
   // ── 共通: 認証 ────────────────────────────────────────────────────────────────
   const expectedToken = process.env['SLACK_RELAY_TOKEN']
@@ -134,6 +149,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       })
       const slackBody = await slackRes.text()
       if (slackRes.ok) {
+        // Alexa 用に本文を保存する。失敗しても Slack 投稿の結果は変えない。
+        try { await saveBriefing(text) }
+        catch (e) { console.warn('[post-to-slack] briefing save failed (non-fatal):', e) }
         return json(res, 200, { status: 'ok' })
       } else {
         return json(res, 200, { status: 'error', slackStatus: slackRes.status, body: slackBody })
@@ -256,4 +274,151 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end',  () => resolve(d))
     req.on('error', reject)
   })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alexa フラッシュブリーフィング
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BRIEFING_KEY  = 'briefing:latest'
+const BRIEFING_TTL  = 60 * 60 * 24 * 3        // 3日
+const BRIEFING_URL  = 'https://health-tracker-murex-chi.vercel.app/'
+const SPEECH_LIMIT  = 4400                     // Alexa の mainText 上限に対する安全域
+const NO_DATA_TEXT  = '本日の健康ブリーフィングはまだ準備できていません。'
+
+interface StoredBriefing {
+  text:    string
+  savedAt: string
+  dateKey: string
+}
+
+function getRedis(): Redis | null {
+  const url   = process.env['KV_REST_API_URL']
+  const token = process.env['KV_REST_API_TOKEN']
+  if (!url || !token) return null
+  return new Redis({ url, token })
+}
+
+/** JST の YYYY-MM-DD */
+function jstDateKey(d: Date): string {
+  return new Date(d.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
+/** Slack へ投稿した本文を Alexa 用に保存する */
+async function saveBriefing(text: string): Promise<void> {
+  const redis = getRedis()
+  if (!redis) {
+    console.warn('[post-to-slack] KV_REST_API_URL / KV_REST_API_TOKEN not set — briefing not saved')
+    return
+  }
+  const now: Date = new Date()
+  const stored: StoredBriefing = {
+    text,
+    savedAt: now.toISOString(),
+    dateKey: jstDateKey(now),
+  }
+  await redis.set(BRIEFING_KEY, JSON.stringify(stored), { ex: BRIEFING_TTL })
+  console.log(`[post-to-slack] briefing saved (${stored.dateKey}, ${text.length} chars)`)
+}
+
+/** GET ?action=feed — Alexa フラッシュブリーフィング JSON */
+async function handleFeed(res: ServerResponse, key: string): Promise<void> {
+  const expected = (process.env['ALEXA_FEED_KEY'] ?? '').trim()
+  if (!expected || key.trim() !== expected) {
+    console.warn('[post-to-slack] feed: key mismatch')
+    return json(res, 404, { error: 'Not found' })
+  }
+
+  let stored: StoredBriefing | null = null
+  try {
+    const redis = getRedis()
+    if (redis) {
+      const raw = await redis.get<StoredBriefing | string>(BRIEFING_KEY)
+      stored = typeof raw === 'string' ? JSON.parse(raw) as StoredBriefing : raw
+    }
+  } catch (e) {
+    console.warn('[post-to-slack] feed: Redis read failed:', e)
+  }
+
+  // データが無くても 200 を返す（Alexa 側でエラー表示にならないようにする）
+  const dateKey  = stored?.dateKey ?? jstDateKey(new Date())
+  const mainText = stored?.text ? sanitizeForSpeech(stored.text) : NO_DATA_TEXT
+
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+  res.setHeader('CDN-Cache-Control', 'no-store')
+  res.setHeader('Vercel-CDN-Cache-Control', 'no-store')
+  return json(res, 200, {
+    uid:             `briefing-${dateKey}`,
+    updateDate:      toAlexaDate(stored?.savedAt),
+    titleText:       titleFromDateKey(dateKey),
+    mainText:        mainText || NO_DATA_TEXT,
+    redirectionUrl:  BRIEFING_URL,
+  })
+}
+
+/** ISO 文字列 → Alexa が要求する UTC の YYYY-MM-DDTHH:mm:ss.0Z */
+function toAlexaDate(iso?: string): string {
+  const d = iso ? new Date(iso) : new Date()
+  const valid = Number.isNaN(d.getTime()) ? new Date() : d
+  return valid.toISOString().replace(/\.\d{3}Z$/, '.0Z')
+}
+
+/** YYYY-MM-DD → 「健康ブリーフィング M月D日」 */
+function titleFromDateKey(dateKey: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey)
+  if (!m) return '健康ブリーフィング'
+  return `健康ブリーフィング ${Number(m[2])}月${Number(m[3])}日`
+}
+
+/**
+ * 読み上げ用サニタイズ。
+ * Slack 記法・Markdown 記号・絵文字を落とし、行ごとに「。」で区切って
+ * Alexa が自然に読めるプレーンテキストにする。
+ */
+function sanitizeForSpeech(raw: string): string {
+  let t = raw
+
+  // Slack 記法
+  t = t.replace(/<@[A-Z0-9]+(?:\|[^>]*)?>/g, '')            // ユーザーメンション → 除去
+  t = t.replace(/<#[A-Z0-9]+\|([^>]*)>/g, '$1')             // チャンネル → 名前だけ残す
+  t = t.replace(/<#[A-Z0-9]+>/g, '')
+  t = t.replace(/<!(?:here|channel|everyone)(?:\|[^>]*)?>/g, '')
+  t = t.replace(/<(?:https?|mailto):[^>|]*\|([^>]*)>/g, '$1') // リンク → ラベルだけ残す
+  t = t.replace(/<(?:https?|mailto):[^>]*>/g, '')
+  t = t.replace(/https?:\/\/\S+/g, '')                      // 裸の URL は読み上げない
+
+  // 絵文字・記号
+  // :smile: 形式。英字を1つ以上含み前後が英数字でないものだけ（7:30:00 のような時刻を壊さない）
+  t = t.replace(/(?<![0-9A-Za-z]):([a-z0-9_+-]*[a-z_][a-z0-9_+-]*):(?![0-9A-Za-z])/gi, '')
+  t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{20E3}\u{2190}-\u{21FF}\u{2500}-\u{257F}]/gu, '')
+
+  // HTML エンティティ（Slack が送ってくる形）
+  t = t.replace(/&amp;/g, 'と').replace(/&lt;/g, '').replace(/&gt;/g, '')
+
+  const lines: string[] = []
+  for (const rawLine of t.split(/\r?\n/)) {
+    let line = rawLine.replace(/[ \t\u3000]+/g, ' ')
+    line = line.replace(/^[\s・•▪◦\-–—*＊＋+>＞#＃|｜]+/, '')  // 行頭の箇条書き・引用記号
+    line = line.replace(/[*_`~#>|＊＿｀～＃＞｜]/g, '')          // 残りの Markdown 記号
+    line = line.replace(/[ \t\u3000]+/g, ' ').trim()
+
+    if (!line) {
+      if (lines.length > 0 && lines[lines.length - 1] !== '') lines.push('')  // 空行は1つに畳む
+      continue
+    }
+    if (!/[。！？!?、]$/.test(line)) line += '。'
+    else if (/[、]$/.test(line))    line = line.slice(0, -1) + '。'
+    lines.push(line)
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+
+  return truncateForSpeech(lines.join('\n'))
+}
+
+/** 上限で打ち切る。可能なら直前の「。」で切る。 */
+function truncateForSpeech(text: string, limit: number = SPEECH_LIMIT): string {
+  if (text.length <= limit) return text
+  const head = text.slice(0, limit)
+  const idx  = head.lastIndexOf('。')
+  return idx > 0 ? head.slice(0, idx + 1) : head
 }

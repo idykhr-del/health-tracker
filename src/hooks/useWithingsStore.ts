@@ -13,12 +13,11 @@ import type { WithingsSyncStatus, BodyRecord } from '../types'
  *   GET  /api/withings-data                   → { connected, expires_at, last_sync, auth_error }
  *   POST /api/withings-data                   → 同期（body なし）
  *   POST /api/withings-data?action=disconnect → 連携解除
- *   POST /api/withings-data?action=migrate    → 旧 localStorage トークンの1回限りの移行
  */
 
 const LEGACY_TOKEN_KEY = 'withings_tokens'
 const LEGACY_SYNC_KEY  = 'withings_last_sync'
-const MIGRATED_KEY     = 'withings_migrated_to_server'  // 移行を試みたことを示すフラグ
+const MIGRATED_KEY     = 'withings_migrated_to_server'  // 旧移行フラグ（解除時の掃除用）
 const SYNC_INTERVAL    = 60 * 60 * 1000  // 1時間 (ms)
 
 function relativeTime(ts: number): string {
@@ -29,10 +28,6 @@ function relativeTime(ts: number): string {
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours}時間前`
   return `${Math.floor(hours / 24)}日前`
-}
-
-function lsGet(key: string): string | null {
-  try { return localStorage.getItem(key) } catch { return null }
 }
 
 function lsRemove(...keys: string[]): void {
@@ -58,12 +53,6 @@ interface CallbackResponse {
   ok?:     boolean
   userid?: string
   error?:  string
-}
-
-interface LegacyTokens {
-  access_token?:  string
-  refresh_token?: string
-  expires_at?:    number
 }
 
 const REAUTH_MESSAGE = '再連携が必要です'
@@ -139,51 +128,6 @@ export function useWithingsStore(
     }
   }, [])
 
-  // ── 旧 localStorage トークンの移行（1回限り）────────────────────────────────
-  /** Redis 側が未連携で localStorage に旧トークンが残っていれば seed する */
-  const migrateLegacyTokens = useCallback(async (): Promise<boolean> => {
-    if (lsGet(MIGRATED_KEY)) return false
-
-    const raw = lsGet(LEGACY_TOKEN_KEY)
-    if (!raw) return false
-
-    let tokens: LegacyTokens
-    try { tokens = JSON.parse(raw) as LegacyTokens }
-    catch {
-      lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY)
-      return false
-    }
-    if (!tokens.access_token || !tokens.refresh_token) {
-      lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY)
-      return false
-    }
-
-    // 再実行しないよう、送信前にフラグを立てる
-    try { localStorage.setItem(MIGRATED_KEY, String(Date.now())) } catch { /* ignore */ }
-
-    try {
-      const res = await fetch('/api/withings-data?action=migrate', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          access_token:  tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          expires_at:    tokens.expires_at,
-        }),
-      })
-      if (!res.ok) {
-        console.warn('[withings] migrate failed: HTTP', res.status)
-        return false
-      }
-      lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY)
-      console.log('[withings] legacy localStorage tokens migrated to server')
-      return true
-    } catch (e) {
-      console.error('[withings] migrate error:', e)
-      return false
-    }
-  }, [])
-
   // ── 起動時: OAuth コールバック処理 → ステータス取得 → 必要なら移行/同期 ──────
   // iOS PWA では Service Worker が /api/withings-callback を index.html で返すため、
   // React 起動後に自ら /api/withings-callback?code=... を fetch する。
@@ -242,13 +186,7 @@ export function useWithingsStore(
       let justConnected = false
       if (code) justConnected = await exchangeCode(code)
 
-      let status = await fetchStatus()
-
-      // 未連携かつ旧トークンが残っていれば1回だけ移行を試みる
-      if (status && !status.connected) {
-        const migrated = await migrateLegacyTokens()
-        if (migrated) status = await fetchStatus()
-      }
+      const status = await fetchStatus()
 
       if (!status?.connected) return
 
