@@ -1,39 +1,25 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { WithingsTokens, WithingsSyncStatus, BodyRecord } from '../types'
+import type { WithingsSyncStatus, BodyRecord } from '../types'
 
-const TOKEN_KEY     = 'withings_tokens'
-const LAST_SYNC_KEY = 'withings_last_sync'
-const SYNC_INTERVAL = 60 * 60 * 1000  // 1時間 (ms)
+/**
+ * Withings 連携フック
+ *
+ * トークンはサーバー（Redis）が唯一の真実の在り処で、フロントは一切保持しない。
+ * 以前は localStorage にもトークンを持っていたため、サーバー側が refresh すると
+ * localStorage 側の refresh token が失効し（Withings はローテーション制）、
+ * しばらくアプリを開かないと 401 になる問題があった。
+ *
+ * エンドポイント:
+ *   GET  /api/withings-data                   → { connected, expires_at, last_sync, auth_error }
+ *   POST /api/withings-data                   → 同期（body なし）
+ *   POST /api/withings-data?action=disconnect → 連携解除
+ *   POST /api/withings-data?action=migrate    → 旧 localStorage トークンの1回限りの移行
+ */
 
-function loadTokens(): WithingsTokens | null {
-  try {
-    const raw = localStorage.getItem(TOKEN_KEY)
-    if (raw) return JSON.parse(raw) as WithingsTokens
-  } catch { /* ignore */ }
-  return null
-}
-
-function saveTokens(tokens: WithingsTokens): void {
-  try { localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens)) } catch { /* ignore */ }
-}
-
-function clearTokens(): void {
-  try {
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(LAST_SYNC_KEY)
-  } catch { /* ignore */ }
-}
-
-function getLastSyncTime(): number {
-  try {
-    const raw = localStorage.getItem(LAST_SYNC_KEY)
-    return raw ? parseInt(raw) : 0
-  } catch { return 0 }
-}
-
-function setLastSyncTime(): void {
-  try { localStorage.setItem(LAST_SYNC_KEY, String(Date.now())) } catch { /* ignore */ }
-}
+const LEGACY_TOKEN_KEY = 'withings_tokens'
+const LEGACY_SYNC_KEY  = 'withings_last_sync'
+const MIGRATED_KEY     = 'withings_migrated_to_server'  // 移行を試みたことを示すフラグ
+const SYNC_INTERVAL    = 60 * 60 * 1000  // 1時間 (ms)
 
 function relativeTime(ts: number): string {
   const diffMs = Date.now() - ts
@@ -45,57 +31,169 @@ function relativeTime(ts: number): string {
   return `${Math.floor(hours / 24)}日前`
 }
 
-// ── Withings API response types ───────────────────────────────────────────────
-
-interface WithingsDataResponse {
-  records:    BodyRecord[]
-  newTokens?: { access_token: string; refresh_token: string; expires_at: number }
-  error?:     string
+function lsGet(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
 }
 
-interface CallbackJsonResponse {
+function lsRemove(...keys: string[]): void {
+  try { for (const k of keys) localStorage.removeItem(k) } catch { /* ignore */ }
+}
+
+// ── API response types ────────────────────────────────────────────────────────
+
+interface StatusResponse {
+  connected:  boolean
+  expires_at: number | null
+  last_sync:  number | null
+  auth_error: string | null
+}
+
+interface SyncResponse {
+  records?: BodyRecord[]
+  error?:   string
+  reason?:  string | null
+}
+
+interface CallbackResponse {
+  ok?:     boolean
+  userid?: string
+  error?:  string
+}
+
+interface LegacyTokens {
   access_token?:  string
   refresh_token?: string
-  userid?:        string
   expires_at?:    number
-  error?:         string
 }
+
+const REAUTH_MESSAGE = '再連携が必要です'
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useWithingsStore(
   onRecordsFetched: (records: BodyRecord[]) => void,
 ) {
-  const [tokens,     setTokens]     = useState<WithingsTokens | null>(() => loadTokens())
-  const [syncStatus, setSyncStatus] = useState<WithingsSyncStatus>('idle')
-  const [syncError,  setSyncError]  = useState<string | null>(null)
-  const [lastSyncMs, setLastSyncMs] = useState<number>(() => getLastSyncTime())
-  const syncedRef    = useRef(false)
-  const codeHandled  = useRef(false)  // 二重実行防止
+  const [isConnected, setIsConnected] = useState(false)
+  const [syncStatus,  setSyncStatus]  = useState<WithingsSyncStatus>('idle')
+  const [syncError,   setSyncError]   = useState<string | null>(null)
+  const [lastSyncMs,  setLastSyncMs]  = useState<number>(0)
+  const bootstrapped = useRef(false)  // 二重実行防止（StrictMode 対策も兼ねる）
 
-  const isConnected   = tokens !== null
+  // syncNow を安定させるためコールバックは ref 経由で参照する
+  const onRecordsFetchedRef = useRef(onRecordsFetched)
+  onRecordsFetchedRef.current = onRecordsFetched
+
   const lastSyncLabel = lastSyncMs > 0 ? relativeTime(lastSyncMs) : null
 
-  // ── 起動時: URLの ?code= を検出してフロントからトークン交換 ──────────────────
-  // iOS PWA では Service Worker が /api/withings-callback を index.html で返すため、
-  // React が起動した後に自ら /api/withings-callback?code=... を fetch してトークンを取得する。
-  useEffect(() => {
-    // ── デバッグ: 起動時のURL状態を全出力 ──────────────────────────────────
-    console.log('[useWithingsStore:init] href   :', window.location.href)
-    console.log('[useWithingsStore:init] search :', window.location.search)
-    console.log('[useWithingsStore:init] hash   :', window.location.hash)
-    console.log('[useWithingsStore:init] codeHandled:', codeHandled.current)
+  // ── サーバーから連携ステータスを取得 ──────────────────────────────────────
+  const fetchStatus = useCallback(async (): Promise<StatusResponse | null> => {
+    try {
+      const res  = await fetch('/api/withings-data')
+      if (!res.ok) {
+        console.warn('[withings] status HTTP', res.status)
+        return null
+      }
+      const data = await res.json() as StatusResponse
+      setIsConnected(data.connected)
+      setLastSyncMs(data.last_sync ?? 0)
+      if (data.auth_error) setSyncError(REAUTH_MESSAGE)
+      return data
+    } catch (e) {
+      console.error('[withings] status fetch error:', e)
+      return null
+    }
+  }, [])
 
-    if (codeHandled.current) {
-      console.log('[useWithingsStore:init] skipped: codeHandled is true')
-      return
+  // ── syncNow: サーバー側のトークンで Withings から取得 ───────────────────────
+  const syncNow = useCallback(async () => {
+    setSyncStatus('syncing')
+    setSyncError(null)
+
+    try {
+      const res  = await fetch('/api/withings-data', { method: 'POST' })
+      const data = await res.json() as SyncResponse
+
+      if (res.status === 401) {
+        setIsConnected(false)
+        setSyncStatus('error')
+        setSyncError(data.error === 'reauth_required'
+          ? REAUTH_MESSAGE
+          : 'Withings と連携されていません')
+        return
+      }
+
+      if (!res.ok || data.error) {
+        setSyncStatus('error')
+        setSyncError(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+
+      setIsConnected(true)
+      setLastSyncMs(Date.now())
+      setSyncStatus('success')
+
+      if (data.records?.length) onRecordsFetchedRef.current(data.records)
+    } catch (e) {
+      setSyncStatus('error')
+      setSyncError(`ネットワークエラー: ${String(e)}`)
+    }
+  }, [])
+
+  // ── 旧 localStorage トークンの移行（1回限り）────────────────────────────────
+  /** Redis 側が未連携で localStorage に旧トークンが残っていれば seed する */
+  const migrateLegacyTokens = useCallback(async (): Promise<boolean> => {
+    if (lsGet(MIGRATED_KEY)) return false
+
+    const raw = lsGet(LEGACY_TOKEN_KEY)
+    if (!raw) return false
+
+    let tokens: LegacyTokens
+    try { tokens = JSON.parse(raw) as LegacyTokens }
+    catch {
+      lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY)
+      return false
+    }
+    if (!tokens.access_token || !tokens.refresh_token) {
+      lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY)
+      return false
     }
 
-    // href 全体からも code を抽出（search が空のケースに備える）
+    // 再実行しないよう、送信前にフラグを立てる
+    try { localStorage.setItem(MIGRATED_KEY, String(Date.now())) } catch { /* ignore */ }
+
+    try {
+      const res = await fetch('/api/withings-data?action=migrate', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          access_token:  tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          expires_at:    tokens.expires_at,
+        }),
+      })
+      if (!res.ok) {
+        console.warn('[withings] migrate failed: HTTP', res.status)
+        return false
+      }
+      lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY)
+      console.log('[withings] legacy localStorage tokens migrated to server')
+      return true
+    } catch (e) {
+      console.error('[withings] migrate error:', e)
+      return false
+    }
+  }, [])
+
+  // ── 起動時: OAuth コールバック処理 → ステータス取得 → 必要なら移行/同期 ──────
+  // iOS PWA では Service Worker が /api/withings-callback を index.html で返すため、
+  // React 起動後に自ら /api/withings-callback?code=... を fetch する。
+  useEffect(() => {
+    if (bootstrapped.current) return
+    bootstrapped.current = true
+
     const href   = window.location.href
     const search = window.location.search
 
-    // URLSearchParams で解析（search が空なら href から直接正規表現で抽出）
     let code:  string | null = new URLSearchParams(search).get('code')
     let state: string | null = new URLSearchParams(search).get('state')
     if (!code) {
@@ -107,75 +205,57 @@ export function useWithingsStore(
       state = m ? decodeURIComponent(m[1]) : null
     }
 
-    console.log('[useWithingsStore:init] code  :', code ? code.slice(0, 10) + '...' : 'null')
-    console.log('[useWithingsStore:init] state :', state)
+    const exchangeCode = async (authCode: string): Promise<boolean> => {
+      if (state !== 'health-tracker') {
+        console.warn('[withings] unexpected state value:', state, '(continuing anyway)')
+      }
+      window.history.replaceState(null, '', '/')
+      setSyncStatus('syncing')
 
-    if (!code) {
-      console.log('[useWithingsStore:init] no code found, skipping')
-      return
-    }
-    // state チェック（Withings が変えてくる場合に備えて警告のみに緩和）
-    if (state !== 'health-tracker') {
-      console.warn('[useWithingsStore:init] unexpected state value:', state, '(continuing anyway)')
-    }
-
-    codeHandled.current = true
-
-    // URLをすぐにクリーンアップ
-    window.history.replaceState(null, '', '/')
-    console.log('[useWithingsStore:init] URL cleaned. Fetching tokens...')
-    setSyncStatus('syncing')
-
-    const fetchSearch = `?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state ?? '')}`
-    fetch(`/api/withings-callback${fetchSearch}`)
-      .then(res => {
-        console.log('[useWithingsStore:init] fetch status:', res.status)
-        return res.json()
-      })
-      .then((data: CallbackJsonResponse) => {
-        console.log('[useWithingsStore:init] response keys:', Object.keys(data).join(', '))
-        // ── デバッグ: コールバックで受け取ったトークン長を確認 ───────────────
-        console.log('[useWithingsStore:init] access_token  length:', data.access_token?.length  ?? 'undefined')
-        console.log('[useWithingsStore:init] refresh_token length:', data.refresh_token?.length ?? 'undefined')
-        console.log('[useWithingsStore:init] access_token  prefix:', data.access_token?.slice(0, 10))
-        // ─────────────────────────────────────────────────────────────────────
-
-        if (data.error || !data.access_token || !data.refresh_token || !data.userid) {
-          console.error('[useWithingsStore:init] Token exchange failed:', data.error)
+      try {
+        const res  = await fetch(
+          `/api/withings-callback?code=${encodeURIComponent(authCode)}&state=${encodeURIComponent(state ?? '')}`,
+        )
+        const data = await res.json() as CallbackResponse
+        if (!res.ok || data.error || !data.ok) {
+          console.error('[withings] token exchange failed:', data.error)
           setSyncStatus('error')
           setSyncError(data.error ?? 'トークン取得に失敗しました')
-          return
+          return false
         }
-
-        const newTokens: WithingsTokens = {
-          access_token:  data.access_token,
-          refresh_token: data.refresh_token,
-          userid:        data.userid,
-          expires_at:    data.expires_at ?? Math.floor(Date.now() / 1000) + 10800,
-        }
-
-        // ── デバッグ: 保存直前の値を確認 ────────────────────────────────────
-        console.log('[useWithingsStore:init] saving tokens. access_token length:', newTokens.access_token.length)
-        saveTokens(newTokens)
-
-        // ── 保存直後に読み返して確認 ─────────────────────────────────────────
-        const savedRaw = localStorage.getItem(TOKEN_KEY)
-        const savedParsed = savedRaw ? JSON.parse(savedRaw) as WithingsTokens : null
-        console.log('[useWithingsStore:init] re-read access_token length:', savedParsed?.access_token?.length ?? 'null')
-
-        localStorage.setItem(LAST_SYNC_KEY, '0')
-        setTokens(newTokens)
+        // トークンはサーバー（Redis）に保存済み。フロントは状態を取り直すだけ。
         setSyncStatus('idle')
-        syncedRef.current = false
-
+        setSyncError(null)
+        lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY)
         window.dispatchEvent(new CustomEvent('withings:connected'))
-        console.log('[useWithingsStore:init] ✅ Tokens saved! userid:', data.userid)
-      })
-      .catch(e => {
-        console.error('[useWithingsStore:init] Fetch error:', e)
+        console.log('[withings] connected. userid:', data.userid)
+        return true
+      } catch (e) {
+        console.error('[withings] callback fetch error:', e)
         setSyncStatus('error')
         setSyncError(`通信エラー: ${String(e)}`)
-      })
+        return false
+      }
+    }
+
+    void (async () => {
+      let justConnected = false
+      if (code) justConnected = await exchangeCode(code)
+
+      let status = await fetchStatus()
+
+      // 未連携かつ旧トークンが残っていれば1回だけ移行を試みる
+      if (status && !status.connected) {
+        const migrated = await migrateLegacyTokens()
+        if (migrated) status = await fetchStatus()
+      }
+
+      if (!status?.connected) return
+
+      // 連携直後、または最終同期から1時間以上経過していれば自動同期
+      const elapsed = Date.now() - (status.last_sync ?? 0)
+      if (justConnected || elapsed >= SYNC_INTERVAL) await syncNow()
+    })()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])  // マウント時1回のみ
 
@@ -187,80 +267,26 @@ export function useWithingsStore(
       if (data.url) {
         window.location.href = data.url
       } else {
-        console.error('[Withings] auth URL取得失敗:', data.error)
+        console.error('[withings] auth URL取得失敗:', data.error)
       }
     } catch (e) {
-      console.error('[Withings] /api/withings-auth fetch エラー:', e)
+      console.error('[withings] /api/withings-auth fetch エラー:', e)
     }
   }, [])
 
-  // ── disconnect: トークンを削除 ────────────────────────────────────────────
-  const disconnect = useCallback(() => {
-    clearTokens()
-    setTokens(null)
+  // ── disconnect: サーバー側（Redis）のトークンを削除 ─────────────────────────
+  const disconnect = useCallback(async () => {
+    try {
+      await fetch('/api/withings-data?action=disconnect', { method: 'POST' })
+    } catch (e) {
+      console.error('[withings] disconnect error:', e)
+    }
+    lsRemove(LEGACY_TOKEN_KEY, LEGACY_SYNC_KEY, MIGRATED_KEY)
+    setIsConnected(false)
     setSyncStatus('idle')
     setSyncError(null)
     setLastSyncMs(0)
   }, [])
-
-  // ── syncNow: /api/withings-data からボディデータを取得 ───────────────────────
-  const syncNow = useCallback(async (currentTokens?: WithingsTokens) => {
-    const t = currentTokens ?? tokens
-    if (!t) return
-
-    setSyncStatus('syncing')
-    setSyncError(null)
-
-    try {
-      const resp = await fetch('/api/withings-data', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          access_token:  t.access_token,
-          refresh_token: t.refresh_token,
-        }),
-      })
-
-      const data = await resp.json() as WithingsDataResponse
-
-      if (!resp.ok || data.error) {
-        setSyncStatus('error')
-        setSyncError(data.error ?? `HTTP ${resp.status}`)
-        return
-      }
-
-      if (data.newTokens) {
-        const updated: WithingsTokens = {
-          ...t,
-          access_token:  data.newTokens.access_token,
-          refresh_token: data.newTokens.refresh_token,
-          expires_at:    data.newTokens.expires_at,
-        }
-        saveTokens(updated)
-        setTokens(updated)
-      }
-
-      setLastSyncTime()
-      setLastSyncMs(Date.now())
-      setSyncStatus('success')
-
-      if (data.records?.length) {
-        onRecordsFetched(data.records)
-      }
-    } catch (e) {
-      setSyncStatus('error')
-      setSyncError(`ネットワークエラー: ${String(e)}`)
-    }
-  }, [tokens, onRecordsFetched])
-
-  // ── マウント時の自動同期 ──────────────────────────────────────────────────
-  useEffect(() => {
-    if (!tokens || syncedRef.current) return
-    const elapsed = Date.now() - getLastSyncTime()
-    if (elapsed < SYNC_INTERVAL) return
-    syncedRef.current = true
-    syncNow(tokens)
-  }, [tokens, syncNow])
 
   return {
     isConnected,
@@ -269,6 +295,7 @@ export function useWithingsStore(
     lastSyncLabel,
     connect,
     disconnect,
-    syncNow: () => syncNow(),
+    syncNow,
+    refreshStatus: fetchStatus,
   }
 }

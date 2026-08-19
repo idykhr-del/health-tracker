@@ -1,74 +1,147 @@
 import type { IncomingMessage, ServerResponse } from 'http'
+import { URL } from 'url'
 import { Redis } from '@upstash/redis'
+import {
+  getValidAccessToken,
+  readTokens,
+  saveTokens,
+  clearTokens,
+  readAuthError,
+  readLastSync,
+} from '../lib/withings.js'
 
 /**
- * POST /api/withings-data
- * body (JSON): { access_token: string, refresh_token?: string }
+ * /api/withings-data
  *
- * Withings measure API から体組成データを取得する。
+ * トークンはすべて Redis (`withings:tokens`) で管理する。
+ * クライアントはトークンを一切送らず、一切受け取らない。
  *
- * リクエスト仕様:
+ *   GET  /api/withings-data                  → 連携ステータス
+ *   GET  /api/withings-data?action=status    → 同上
+ *   POST /api/withings-data                  → Withings から取得して Redis に保存
+ *   POST /api/withings-data?action=disconnect→ Redis のトークンを削除
+ *   POST /api/withings-data?action=migrate   → 旧 localStorage トークンを Redis に seed
+ *
+ * status レスポンス:
+ *   { connected: boolean, expires_at: number|null, last_sync: number|null, auth_error: string|null }
+ *
+ * sync レスポンス:
+ *   200 { records: BodyRecord[], debug }
+ *   401 { error: 'not_connected' }   … Redis にトークンが無い
+ *   401 { error: 'reauth_required' } … refresh に失敗した（再連携が必要）
+ *
+ * Withings measure API リクエスト仕様:
  *   URL     : https://wbsapi.withings.net/measure
  *   Method  : POST
  *   Headers : Authorization: Bearer {token}
  *             Content-Type: application/x-www-form-urlencoded
  *   Body    : action=getmeas&meastype=1&meastype=6&...  (手動文字列・URLSearchParams不使用)
- *   category: 省略（全カテゴリ）
- *   startdate: 省略（全期間）
- *
- * meastype マッピング:
- *   1  → weight     (kg)
- *   6  → bodyFatPct (%)
- *   8  → muscleMass (kg)
- *   76 → boneMass   (kg)
- *   88 → visceralFat (指数)
- *   77 → hydration   (%)
- *
- * レスポンス: { records: BodyRecord[], debug, newTokens? }
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
-  if (req.method !== 'POST')   { return json(res, 405, { error: 'Method not allowed' }) }
 
-  // ── ① リクエストボディ取得 ────────────────────────────────────────────────
-  let rawBody = ''
-  try { rawBody = await readBody(req) }
-  catch (e) { return json(res, 400, { error: 'readBody failed', detail: String(e) }) }
+  const host   = req.headers.host ?? 'localhost'
+  const url    = new URL(req.url ?? '/', `http://${host}`)
+  const action = url.searchParams.get('action')
 
-  let parsed: { access_token?: string; refresh_token?: string }
-  try { parsed = JSON.parse(rawBody) }
-  catch (e) { return json(res, 400, { error: 'JSON parse failed', detail: String(e) }) }
+  const redisUrl   = process.env['KV_REST_API_URL']
+  const redisToken = process.env['KV_REST_API_TOKEN']
+  if (!redisUrl || !redisToken) {
+    console.error('[withings-data] KV_REST_API_URL / KV_REST_API_TOKEN not set')
+    return json(res, 500, { error: 'redis_not_configured' })
+  }
+  const redis = new Redis({ url: redisUrl, token: redisToken })
 
-  const { access_token, refresh_token } = parsed
-  if (!access_token) {
-    return json(res, 400, { error: 'access_token is required' })
+  if (req.method === 'GET' || action === 'status') return handleStatus(res, redis)
+  if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' })
+  if (action === 'disconnect') return handleDisconnect(res, redis)
+  if (action === 'migrate')    return handleMigrate(req, res, redis)
+  return handleSync(res, redis)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET: 連携ステータス
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function handleStatus(res: ServerResponse, redis: Redis) {
+  const [tokens, authError, lastSync] = await Promise.all([
+    readTokens(redis),
+    readAuthError(redis),
+    readLastSync(redis),
+  ])
+  return json(res, 200, {
+    connected:  tokens !== null,
+    expires_at: tokens?.expires_at ?? null,
+    last_sync:  lastSync,
+    auth_error: authError?.reason ?? null,
+  })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST ?action=disconnect: Redis のトークンを削除
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function handleDisconnect(res: ServerResponse, redis: Redis) {
+  await clearTokens(redis)
+  console.log('[withings-data] disconnected: tokens removed from Redis')
+  return json(res, 200, { ok: true })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST ?action=migrate: 旧 localStorage トークンを Redis に seed（1回限りの移行用）
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function handleMigrate(req: IncomingMessage, res: ServerResponse, redis: Redis) {
+  let parsed: { access_token?: string; refresh_token?: string; expires_at?: number }
+  try {
+    parsed = JSON.parse(await readBody(req)) as typeof parsed
+  } catch (e) {
+    return json(res, 400, { error: 'invalid_body', detail: String(e) })
   }
 
-  const clientId     = process.env.WITHINGS_CLIENT_ID
-  const clientSecret = process.env.WITHINGS_CLIENT_SECRET
+  const { access_token, refresh_token } = parsed
+  if (!access_token || !refresh_token) {
+    return json(res, 400, { error: 'access_token / refresh_token are required' })
+  }
 
-  // ── ② データ取得（トークンエラー時は1回だけリフレッシュ） ─────────────────
-  let currentToken = access_token
-  let newTokens: NewTokens | undefined
+  // 既に Redis 側にトークンがあればそちらが正。上書きしない。
+  const existing = await readTokens(redis)
+  if (existing) {
+    console.log('[withings-data] migrate skipped: Redis already has tokens')
+    return json(res, 200, { ok: true, seeded: false })
+  }
 
-  let result = await fetchAllPages(currentToken)
+  await saveTokens(redis, {
+    access_token,
+    refresh_token,
+    expires_at: parsed.expires_at ?? Math.floor(Date.now() / 1000) + 10800,
+  })
+  console.log('[withings-data] migrate: legacy localStorage tokens seeded into Redis')
+  return json(res, 200, { ok: true, seeded: true })
+}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST: Withings からデータ取得 → Redis へ保存
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function handleSync(res: ServerResponse, redis: Redis) {
+  const token = await getValidAccessToken(redis)
+  if (!token) return unauthorized(res, redis)
+
+  let result = await fetchAllPages(token)
+
+  // 期限内のはずのトークンが弾かれた場合のみ、強制 refresh して1回だけ再試行する
   if (result.authError) {
-    if (!clientId || !clientSecret || !refresh_token) {
-      return json(res, 401, { error: 'Token expired. Please reconnect Withings.' })
-    }
-    const refreshed = await refreshAccessToken(clientId, clientSecret, refresh_token)
-    if (!refreshed) {
-      return json(res, 401, { error: 'Token refresh failed. Please reconnect Withings.' })
-    }
-    currentToken = refreshed.access_token
-    newTokens    = refreshed
-    result       = await fetchAllPages(currentToken)
+    console.warn('[withings-data] auth error with stored token — forcing refresh')
+    const forced = await getValidAccessToken(redis, { force: true })
+    if (!forced) return unauthorized(res, redis)
+    result = await fetchAllPages(forced)
     if (result.authError) {
-      return json(res, 502, { error: 'Withings auth error after token refresh' })
+      console.error('[withings-data] auth error persists after forced refresh')
+      return json(res, 401, { error: 'reauth_required' })
     }
   }
 
@@ -81,73 +154,56 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     })
   }
 
-  // ── ③ パース & レスポンス ──────────────────────────────────────────────────
   const grps = result.grps ?? []
   const { records, debug } = parseGroups(grps)
 
   console.log(`[withings-data] OK: records=${records.length} grps=${grps.length}`)
   console.log(`[withings-data] meastypeCounts:`, JSON.stringify(debug.meastypeCounts))
 
-  // ── ④ Redis にトークン＆データをキャッシュ（health-data.ts の自動同期用）────
-  // フロントが手動同期した際にトークンを Redis へ移行し、直近30日分のデータも保存する。
-  // これにより既存ユーザーも再認証なしで on-demand sync が動く。
-  const redisUrl   = process.env['KV_REST_API_URL']
-  const redisToken = process.env['KV_REST_API_TOKEN']
-  if (redisUrl && redisToken) {
-    try {
-      const redis = new Redis({ url: redisUrl, token: redisToken })
-      const ops: Promise<unknown>[] = []
-
-      // トークン保存（refresh後の最新トークンを優先）
-      const finalToken = newTokens ?? { access_token: currentToken, refresh_token, expires_at: Math.floor(Date.now() / 1000) + 10800 }
-      if (finalToken.access_token && finalToken.refresh_token) {
-        ops.push(redis.set('withings:tokens', JSON.stringify({
-          access_token:  finalToken.access_token,
-          refresh_token: finalToken.refresh_token,
-          expires_at:    finalToken.expires_at,
-        }), { ex: 60 * 60 * 24 * 90 }))
+  // ── 直近60日分のデータと sync 時刻を Redis に保存（health-data.ts が読む）──────
+  try {
+    const ops: Promise<unknown>[] = []
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 60)
+    const cutoffStr = cutoff.toISOString().slice(0, 10)
+    for (const rec of records) {
+      if (rec.date < cutoffStr) continue
+      const stored = {
+        weight:      rec.weight,
+        bodyFatPct:  rec.bodyFatPct,
+        fatMass:     rec.fatMass,
+        fatFreeMass: rec.fatFreeMass,
+        muscleMass:  rec.muscleMass,
+        boneMass:    rec.boneMass,
       }
-
-      // 直近60日分のデータを withings:body:YYYY-MM-DD に保存
-      const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 60)
-      const cutoffStr = cutoff.toISOString().slice(0, 10)
-      for (const rec of records) {
-        if (rec.date < cutoffStr) continue
-        const stored = {
-          weight:      rec.weight,
-          bodyFatPct:  rec.bodyFatPct,
-          fatMass:     rec.fatMass,
-          fatFreeMass: rec.fatFreeMass,
-          muscleMass:  rec.muscleMass,
-          boneMass:    rec.boneMass,
-        }
-        ops.push(redis.set(`withings:body:${rec.date}`, JSON.stringify(stored), { ex: 60 * 60 * 24 * 90 }))
-      }
-      ops.push(redis.set('withings:sync:last', String(Date.now()), { ex: 60 * 60 * 24 * 30 }))
-
-      await Promise.all(ops)
-      console.log(`[withings-data] Redis: tokens saved, ${records.length} body records cached`)
-    } catch (e) {
-      console.warn('[withings-data] Redis cache failed (non-fatal):', e)
+      ops.push(redis.set(`withings:body:${rec.date}`, JSON.stringify(stored), { ex: 60 * 60 * 24 * 90 }))
     }
+    ops.push(redis.set('withings:sync:last', String(Date.now()), { ex: 60 * 60 * 24 * 30 }))
+    await Promise.all(ops)
+    console.log(`[withings-data] Redis: ${records.length} body records cached`)
+  } catch (e) {
+    console.warn('[withings-data] Redis cache failed (non-fatal):', e)
   }
 
-  return json(res, 200, {
-    records,
-    debug,
-    ...(newTokens ? { newTokens } : {}),
-  })
+  return json(res, 200, { records, debug })
+}
+
+/**
+ * トークンが取れなかった理由を切り分けて 401 を返す。
+ * refresh 失敗時はトークンを消さないので、「トークンが残っている＝refresh 失敗」で判別できる。
+ */
+async function unauthorized(res: ServerResponse, redis: Redis) {
+  const [tokens, authError] = await Promise.all([readTokens(redis), readAuthError(redis)])
+  if (!tokens) {
+    console.log('[withings-data] 401 not_connected')
+    return json(res, 401, { error: 'not_connected' })
+  }
+  console.warn(`[withings-data] 401 reauth_required (${authError?.reason ?? 'unknown'})`)
+  return json(res, 401, { error: 'reauth_required', reason: authError?.reason ?? null })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 型定義
 // ─────────────────────────────────────────────────────────────────────────────
-
-interface NewTokens {
-  access_token:  string
-  refresh_token: string
-  expires_at:    number
-}
 
 interface WithingsMeasure    { value: number; type: number; unit: number }
 interface WithingsMeasureGrp { grpid: number; date: number; measures: WithingsMeasure[] }
@@ -168,11 +224,11 @@ interface FetchResult {
 //   1  = weight       (体重, kg)
 //   5  = fatFreeMass  (除脂肪体重, kg)
 //   6  = bodyFatPct   (体脂肪率, %)
-//   8  = fatMass      (体脂肪量, kg)  ※旧コードでは誤って muscleMass としていた
-//   76 = muscleMass   (筋肉量, kg)   ※旧コードでは誤って boneMass としていた
-//   88 = boneMass     (骨量, kg)     ※旧コードでは誤って visceralFat としていた
+//   8  = fatMass      (体脂肪量, kg)
+//   76 = muscleMass   (筋肉量, kg)
+//   88 = boneMass     (骨量, kg)
 //   77 = hydration    (水分量, kg)
-//   170= visceralFat  (内臓脂肪指数) ※旧コードでは 88 と誤マッピング
+//   170= visceralFat  (内臓脂肪指数)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MEAS_FIELD: Record<number, string> = {
@@ -203,8 +259,6 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
     // ボディ文字列を手動構築（URLSearchParams/JSON.stringify は使わない）
     const bodyStr = `action=getmeas&${measTypeParts}&offset=${offset}`
 
-    console.log(`[withings-data] page=${page + 1} body="${bodyStr}"`)
-
     let rawText = ''
     let httpStatus = 0
     try {
@@ -222,8 +276,6 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
       return { error: `Network error: ${String(e)}`, requestBody: bodyStr }
     }
 
-    console.log(`[withings-data] page=${page + 1} HTTP=${httpStatus} raw="${rawText.slice(0, 200)}"`)
-
     let data: WithingsMeasResponse
     try {
       data = JSON.parse(rawText) as WithingsMeasResponse
@@ -237,6 +289,7 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
 
     // 認証エラー
     if ([100, 101, 102, 401].includes(data.status)) {
+      console.warn(`[withings-data] page=${page + 1} HTTP=${httpStatus} withingsStatus=${data.status} (auth error)`)
       return { authError: true, requestBody: bodyStr }
     }
     if (data.status !== 0 || !data.body) {
@@ -248,14 +301,6 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
       }
     }
 
-    // 各 grp の measures を全出力（type / value / unit）
-    data.body.measuregrps.forEach((grp, i) => {
-      const mStr = grp.measures
-        .map(m => `{type:${m.type},value:${m.value},unit:${m.unit}}`)
-        .join(', ')
-      console.log(`[withings-data] grp[${i}] date=${grp.date} grpid=${grp.grpid} measures=[${mStr}]`)
-    })
-
     allGrps.push(...data.body.measuregrps)
     console.log(`[withings-data] page=${page + 1}: ${data.body.measuregrps.length} grps (total ${allGrps.length})`)
 
@@ -264,41 +309,6 @@ async function fetchAllPages(token: string): Promise<FetchResult> {
   }
 
   return { grps: allGrps }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// トークンリフレッシュ
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function refreshAccessToken(
-  clientId: string,
-  clientSecret: string,
-  refreshToken: string,
-): Promise<NewTokens | null> {
-  try {
-    const body = new URLSearchParams({
-      action:        'requesttoken',
-      grant_type:    'refresh_token',
-      client_id:     clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-    })
-    const resp = await fetch('https://wbsapi.withings.net/v2/oauth2', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    body.toString(),
-    })
-    const data = await resp.json() as {
-      status: number
-      body:   { access_token: string; refresh_token: string; expires_in: number }
-    }
-    if (data.status !== 0) return null
-    return {
-      access_token:  data.body.access_token,
-      refresh_token: data.body.refresh_token,
-      expires_at:    Math.floor(Date.now() / 1000) + (data.body.expires_in ?? 10800),
-    }
-  } catch { return null }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -351,25 +361,12 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
     fields: Record<string, number>
   }>()
 
-  console.log(`[parseGroups] total grps to process: ${grps.length}`)
-
-  grps.forEach((grp, idx) => {
+  grps.forEach(grp => {
     // UTC → JST (+9h)
     const jstMs  = grp.date * 1000 + 9 * 3600 * 1000
     const jstIso = new Date(jstMs).toISOString()
     const date   = jstIso.slice(0, 10)   // YYYY-MM-DD
     const time   = jstIso.slice(11, 16)  // HH:MM
-
-    // 全 type を列挙（マッピング有無問わず）
-    const allTypes = grp.measures
-      .map(m => {
-        const actual = Math.round(m.value * Math.pow(10, m.unit) * 100) / 100
-        const field  = MEAS_FIELD[m.type] ?? '?'
-        return `type${m.type}(${field})=${actual}`
-      })
-      .join(', ')
-
-    console.log(`[parseGroups] grp[${idx}] grpid=${grp.grpid} date=${date} time=${time} | ${allTypes}`)
 
     const fields: Record<string, number> = {}
     for (const m of grp.measures) {
@@ -387,13 +384,10 @@ function parseGroups(grps: WithingsMeasureGrp[]): ParseResult {
   for (const s of sessions.values()) {
     const existing = byDate.get(s.date)
     if (!existing || Object.keys(s.fields).length > Object.keys(existing.fields).length) {
-      if (existing) {
-        console.log(`[parseGroups] ${s.date}: grpid=${s.grpid}(${Object.keys(s.fields).length}fields) > grpid=${existing.grpid}(${Object.keys(existing.fields).length}fields) → replaced`)
-      }
       byDate.set(s.date, s)
     }
   }
-  console.log(`[parseGroups] unique dates: ${byDate.size}, sessions: ${sessions.size}`)
+  console.log(`[withings-data] unique dates: ${byDate.size}, sessions: ${sessions.size}`)
 
   // BodyRecord 配列に変換
   const records: BodyRecord[] = []

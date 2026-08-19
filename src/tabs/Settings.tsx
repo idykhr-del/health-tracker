@@ -52,9 +52,9 @@ function DebugPanel() {
     r('hash',    window.location.hash    || '(empty)')
     r('pathname', window.location.pathname)
 
-    const tokens = localStorage.getItem('withings_tokens')
-    r('withings_tokens',    tokens ? `EXISTS(${tokens.slice(0,50)}...)` : 'NOT FOUND')
-    r('withings_last_sync', localStorage.getItem('withings_last_sync') ?? 'NOT FOUND')
+    // トークンは Redis 側で管理する。localStorage に残っていれば移行待ちの旧データ。
+    r('withings_tokens(旧)', localStorage.getItem('withings_tokens') ? '残存（移行待ち）' : 'なし')
+    r('移行フラグ', localStorage.getItem('withings_migrated_to_server') ?? '未実行')
 
     // search から code を抽出
     const sp    = new URLSearchParams(window.location.search)
@@ -88,33 +88,10 @@ function DebugPanel() {
   const testWithingsApi = useCallback(async () => {
     setFetching(true)
     addLine('--- Withings API テスト 開始 ---')
-
-    const raw = localStorage.getItem('withings_tokens')
-    if (!raw) {
-      addLine('❌ withings_tokens が localStorage にありません')
-      setFetching(false)
-      return
-    }
-
-    let tokens: Record<string, unknown>
-    try { tokens = JSON.parse(raw) as Record<string, unknown> }
-    catch { addLine('❌ withings_tokens のJSONパース失敗'); setFetching(false); return }
-
-    // access_token の最初の20文字を表示（デバッグ用）
-    const tokenStr = String(tokens['access_token'] ?? '')
-    addLine(`access_token(20文字): ${tokenStr.slice(0, 20)}...`)
-    addLine(`access_token 長さ: ${tokenStr.length}文字`)
-    addLine('POST /api/withings-data ...')
+    addLine('POST /api/withings-data （トークンはサーバーの Redis から取得）...')
 
     try {
-      const res  = await fetch('/api/withings-data', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          access_token:  tokens['access_token'],
-          refresh_token: tokens['refresh_token'],
-        }),
-      })
+      const res  = await fetch('/api/withings-data', { method: 'POST' })
       addLine(`HTTP status: ${res.status}`)
 
       const data = await res.json() as {
@@ -136,6 +113,8 @@ function DebugPanel() {
 
       if (data.error) {
         addLine(`❌ error: ${data.error}`)
+        if (data.error === 'not_connected')   addLine('  → 未連携です。Withings連携ボタンから接続してください')
+        if (data.error === 'reauth_required') addLine('  → refresh に失敗しました。再連携が必要です')
         if (data.detail)    addLine(`  detail: ${String(data.detail).slice(0, 200)}`)
         if (data.apiStatus) addLine(`  Withings status: ${data.apiStatus}`)
         if (data.rawSample) {
@@ -242,18 +221,14 @@ function DebugPanel() {
 
       if (json['error']) {
         addLine(`❌ error: ${json['error']}`)
-      } else if (json['access_token']) {
-        const tokensStr = JSON.stringify(json)
-        localStorage.setItem('withings_tokens', tokensStr)
-        localStorage.setItem('withings_last_sync', '0')
-        addLine('✅ localStorageに保存しました')
-        addLine('ページをリロードして連携状態を確認してください')
+      } else if (json['ok']) {
+        addLine(`✅ サーバー(Redis)にトークンを保存しました (userid: ${String(json['userid'] ?? '?')})`)
         window.history.replaceState(null, '', '/')
         // カスタムイベントでアプリに通知
         window.dispatchEvent(new CustomEvent('withings:connected'))
         collect()  // パネル情報を再取得
       } else {
-        addLine('❌ access_tokenが見つかりません')
+        addLine('❌ 予期しないレスポンスです')
         addLine(JSON.stringify(json).slice(0, 200))
       }
     } catch (e) {
@@ -262,31 +237,26 @@ function DebugPanel() {
     setFetching(false)
   }, [addLine, collect])
 
-  // ── localStorageの生のトークン表示 ────────────────────────────────────────
-  const showRawToken = useCallback(() => {
-    addLine('--- withings_tokens 生の値 ---')
-    const raw = localStorage.getItem('withings_tokens')
-    if (!raw) {
-      addLine('❌ withings_tokens が存在しません')
-      return
-    }
-    addLine(`全体の長さ: ${raw.length}文字`)
-    // 100文字ずつ表示（最大300文字）
-    for (let i = 0; i < Math.min(raw.length, 300); i += 100) {
-      addLine(`[${i}-${Math.min(i + 100, raw.length)}]: ${raw.slice(i, i + 100)}`)
-    }
-    if (raw.length > 300) addLine(`... (残り ${raw.length - 300}文字省略)`)
-
-    // パースして各フィールドの長さも表示
+  // ── 連携ステータス表示（GET /api/withings-data）──────────────────────────
+  const showStatus = useCallback(async () => {
+    addLine('--- 連携ステータス (GET /api/withings-data) ---')
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>
-      addLine('--- フィールド別の長さ ---')
-      for (const [k, v] of Object.entries(parsed)) {
-        const len = typeof v === 'string' ? v.length : JSON.stringify(v).length
-        addLine(`  ${k}: ${len}文字`)
+      const res  = await fetch('/api/withings-data')
+      addLine(`HTTP status: ${res.status}`)
+      const data = await res.json() as {
+        connected?:  boolean
+        expires_at?: number | null
+        last_sync?:  number | null
+        auth_error?: string | null
+        error?:      string
       }
+      if (data.error) { addLine(`❌ error: ${data.error}`); return }
+      addLine(`connected : ${data.connected === true ? 'YES' : 'NO'}`)
+      addLine(`expires_at: ${data.expires_at ? new Date(data.expires_at * 1000).toLocaleString('ja-JP') : 'なし'}`)
+      addLine(`last_sync : ${data.last_sync ? new Date(data.last_sync).toLocaleString('ja-JP') : 'なし'}`)
+      addLine(`auth_error: ${data.auth_error ?? 'なし'}`)
     } catch (e) {
-      addLine(`❌ JSONパース失敗: ${e}`)
+      addLine(`❌ fetchエラー: ${e}`)
     }
     addLine('--- end ---')
   }, [addLine])
@@ -328,17 +298,17 @@ function DebugPanel() {
           {fetching ? '実行中...' : '🔑 手動でコード交換を試みる'}
         </button>
         <button
-          onClick={showRawToken}
+          onClick={showStatus}
           className="py-3 rounded-xl text-sm font-semibold bg-green-500/20 border border-green-500/50 text-green-300"
         >
-          🔍 localStorageのトークンを生で表示（100文字）
+          🔍 連携ステータスを表示
         </button>
         <button onClick={copyAll} className="py-2.5 bg-surface border border-border rounded-xl text-xs text-muted">
           全文コピー（開発者に送る）
         </button>
         <p className="text-[10px] text-muted leading-5">
           「Withings APIテスト」→ APIレスポンスを確認<br />
-          「トークンを生で表示」→ access_token の長さを確認<br />
+          「連携ステータス」→ サーバー側のトークン状態を確認<br />
           「手動コード交換」→ Withings認証直後の ?code= を使って連携
         </p>
       </div>
@@ -590,8 +560,7 @@ export default function Settings({
               </button>
               <button
                 onClick={() => {
-                  localStorage.removeItem('withings_tokens')
-                  localStorage.removeItem('withings_last_sync')
+                  onWithingsDisconnect()
                   showToast('連携を解除しました。再度Withings連携ボタンから接続してください', 'info')
                   setTimeout(() => window.location.reload(), 1200)
                 }}

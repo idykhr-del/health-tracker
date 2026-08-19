@@ -120,6 +120,7 @@ export interface AppSettings {
 
 // ── Withings OAuth2 ───────────────────────────────────────────────────────────
 
+/** @deprecated トークンは Redis (サーバー側) で管理する。旧 localStorage データの型としてのみ残す。 */
 export interface WithingsTokens {
   access_token:  string
   refresh_token: string

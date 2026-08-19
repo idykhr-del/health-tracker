@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { URL } from 'url'
 import { Redis } from '@upstash/redis'
+import { saveTokens, AUTH_ERROR_KEY, SYNC_LAST_KEY } from '../lib/withings.js'
 
 /**
  * GET /api/withings-callback?code=xxx&state=health-tracker
@@ -9,8 +10,10 @@ import { Redis } from '@upstash/redis'
  * フロントエンドが React を起動後に自らこのエンドポイントを fetch する。
  * → 常に JSON を返す（HTML/リダイレクト方式は廃止）
  *
- * レスポンス (成功): { access_token, refresh_token, userid, expires_at }
+ * レスポンス (成功): { ok: true, userid }
  * レスポンス (失敗): { error: string }
+ *
+ * トークンは Redis (`withings:tokens`) にのみ保存し、クライアントには返さない。
  *
  * 環境変数: WITHINGS_CLIENT_ID, WITHINGS_CLIENT_SECRET, WITHINGS_REDIRECT_URI
  */
@@ -73,29 +76,33 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     console.log('[withings-callback] Success, userid:', userid)
     console.log('[withings-callback] access_token  length:', access_token?.length  ?? 'undefined')
     console.log('[withings-callback] refresh_token length:', refresh_token?.length ?? 'undefined')
-    console.log('[withings-callback] access_token  prefix:', access_token?.slice(0, 10))
     // ──────────────────────────────────────────────────────────────────────────
 
-    // ── Redis にトークンを保存（サーバーサイド自動同期用）────────────────────────
-    // health-data.ts が朝のブリーフィング前に on-demand sync するために使う。
-    // フロントエンドは引き続き localStorage にも保存する（既存フロー維持）。
+    // ── Redis にトークンを保存（唯一の保存先）──────────────────────────────────
+    // トークンの真実の在り処は Redis のみ。ここで保存できなければ連携は成立しないので、
+    // 失敗を握り潰さず 500 を返す（黙って壊れた連携状態を作らない）。
     const redisUrl   = process.env['KV_REST_API_URL']
     const redisToken = process.env['KV_REST_API_TOKEN']
-    if (redisUrl && redisToken) {
-      try {
-        const redis = new Redis({ url: redisUrl, token: redisToken })
-        await redis.set(
-          'withings:tokens',
-          JSON.stringify({ access_token, refresh_token, expires_at }),
-          { ex: 60 * 60 * 24 * 90 },  // 90日TTL
-        )
-        console.log('[withings-callback] Tokens saved to Redis (userid:', userid, ')')
-      } catch (e) {
-        console.warn('[withings-callback] Redis save failed (non-fatal):', e)
-      }
+    if (!redisUrl || !redisToken) {
+      console.error('[withings-callback] KV_REST_API_URL / KV_REST_API_TOKEN not set')
+      return json(res, 500, { error: 'トークン保存先(Redis)が設定されていません' })
+    }
+    try {
+      const redis = new Redis({ url: redisUrl, token: redisToken })
+      await saveTokens(redis, { access_token, refresh_token, expires_at })
+      // 過去の refresh 失敗フラグ・sync キャッシュをリセットして再連携を反映させる
+      await Promise.all([
+        redis.del(AUTH_ERROR_KEY),
+        redis.del(SYNC_LAST_KEY),
+      ])
+      console.log('[withings-callback] Tokens saved to Redis (userid:', userid, ')')
+    } catch (e) {
+      console.error('[withings-callback] Redis save FAILED:', e)
+      return json(res, 500, { error: `トークンの保存に失敗しました: ${String(e)}` })
     }
 
-    return json(res, 200, { access_token, refresh_token, userid, expires_at })
+    // トークン本体はクライアントに返さない
+    return json(res, 200, { ok: true, userid })
 
   } catch (e) {
     console.error('[withings-callback] Error:', e)

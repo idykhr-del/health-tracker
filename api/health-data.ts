@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http'
 import { Redis } from '@upstash/redis'
+import { getValidAccessToken } from '../lib/withings.js'
 
 /**
  * GET /api/health-data
@@ -14,7 +15,7 @@ import { Redis } from '@upstash/redis'
  *   - 通常の sync は 1〜2秒で完了するため UX への影響は許容範囲。
  *
  * Redis キー:
- *   withings:tokens            → { access_token, refresh_token, expires_at }
+ *   withings:tokens            → { access_token, refresh_token, expires_at }（管理は lib/withings.ts に一本化）
  *   withings:sync:last         → Unix ms (最終 Withings sync 時刻)
  *   withings:body:YYYY-MM-DD   → WithingsStoredBody
  *   hae:body:YYYY-MM-DD        → StoredBody (Health Auto Export)
@@ -130,10 +131,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
 /** 最終 sync から 3h 以上経過していれば Withings API を叩いて Redis を更新する */
 async function syncWithingsIfStale(redis: Redis): Promise<void> {
-  const clientId     = process.env['WITHINGS_CLIENT_ID']
-  const clientSecret = process.env['WITHINGS_CLIENT_SECRET']
-  if (!clientId || !clientSecret) return
-
   // 3h キャッシュチェック
   const lastStr = await redis.get<string>('withings:sync:last')
   const last    = lastStr ? parseInt(lastStr) : 0
@@ -142,26 +139,12 @@ async function syncWithingsIfStale(redis: Redis): Promise<void> {
     return
   }
 
-  // Redis からトークン取得
-  const stored = await redis.get<WithingsTokens>('withings:tokens')
-  if (!stored?.access_token || !stored?.refresh_token) {
-    console.log('[health-data] Withings sync skipped (no tokens in Redis)')
+  // トークン管理・refresh は lib/withings.ts に一本化（refresh 経路をここに持たない）。
+  // 未連携 / 再連携待ちなら例外を投げず、HAE フォールバックで続行する。
+  const accessToken = await getValidAccessToken(redis)
+  if (!accessToken) {
+    console.log('[health-data] Withings sync skipped (no valid token) — falling back to HAE')
     return
-  }
-
-  // access token の有効期限チェック → 必要なら refresh
-  let accessToken = stored.access_token
-  const nowSec    = Math.floor(Date.now() / 1000)
-  if (stored.expires_at - nowSec < 300) {  // 残り5分未満
-    const refreshed = await refreshWithingsToken(clientId, clientSecret, stored.refresh_token)
-    if (!refreshed) {
-      console.warn('[health-data] Withings token refresh failed')
-      return
-    }
-    accessToken = refreshed.access_token
-    // 新しいトークンを Redis に保存（Withings は refresh token をローテーション）
-    await redis.set('withings:tokens', JSON.stringify({ ...stored, ...refreshed }), { ex: 60 * 60 * 24 * 90 })
-    console.log('[health-data] Withings token refreshed and saved')
   }
 
   // 直近 30 日分を取得
@@ -314,37 +297,6 @@ async function fetchWithingsMeasures(
   return byDate
 }
 
-async function refreshWithingsToken(
-  clientId:     string,
-  clientSecret: string,
-  refreshToken: string,
-): Promise<Omit<WithingsTokens, 'access_token'> & { access_token: string } | null> {
-  try {
-    const body = new URLSearchParams({
-      action:        'requesttoken',
-      grant_type:    'refresh_token',
-      client_id:     clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-    })
-    const resp = await fetch('https://wbsapi.withings.net/v2/oauth2', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    body.toString(),
-    })
-    const data = await resp.json() as {
-      status: number
-      body:   { access_token: string; refresh_token: string; expires_in: number }
-    }
-    if (data.status !== 0) return null
-    return {
-      access_token:  data.body.access_token,
-      refresh_token: data.body.refresh_token,
-      expires_at:    Math.floor(Date.now() / 1000) + (data.body.expires_in ?? 10800),
-    }
-  } catch { return null }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // マージ: Withings 優先、HAE フォールバック
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,12 +338,6 @@ function mergeBodyRecord(
 // ─────────────────────────────────────────────────────────────────────────────
 // 型定義
 // ─────────────────────────────────────────────────────────────────────────────
-
-interface WithingsTokens {
-  access_token:  string
-  refresh_token: string
-  expires_at:    number
-}
 
 interface WithingsStoredBody {
   weight?:      number
