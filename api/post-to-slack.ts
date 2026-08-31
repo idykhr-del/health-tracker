@@ -388,13 +388,20 @@ function sanitizeForSpeech(raw: string): string {
   t = t.replace(/(?<![0-9A-Za-z]):([a-z0-9_+-]*[a-z_][a-z0-9_+-]*):(?![0-9A-Za-z])/gi, '')
   t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{20E3}\u{2190}-\u{21FF}\u{2500}-\u{257F}]/gu, '')
 
+  // 全角の区切り記号は読点に寄せる（「スラッシュ」と読み上げられるのを防ぐ）
+  t = t.replace(/[ \t\u3000]*[／・･]{1}[ \t\u3000]*/g, (m, off, str) => {
+    // 行頭の「・」は箇条書きなので、この置換の対象にしない
+    const lineStart = str.lastIndexOf('\n', off) + 1
+    return str.slice(lineStart, off).trim() === '' ? m : '、'
+  })
+
   // HTML エンティティ（Slack が送ってくる形）
   t = t.replace(/&amp;/g, 'と').replace(/&lt;/g, '').replace(/&gt;/g, '')
 
   const lines: string[] = []
   for (const rawLine of t.split(/\r?\n/)) {
     let line = rawLine.replace(/[ \t\u3000]+/g, ' ')
-    line = line.replace(/^[\s・•▪◦\-–—*＊＋+>＞#＃|｜]+/, '')  // 行頭の箇条書き・引用記号
+    line = line.replace(/^[\s・•▪▫◦■□◆◇●○◎★☆※\-–—*＊＋+>＞#＃|｜]+/, '')  // 行頭の見出し・箇条書き・引用記号
     line = line.replace(/[*_`~#>|＊＿｀～＃＞｜]/g, '')          // 残りの Markdown 記号
     line = line.replace(/[ \t\u3000]+/g, ' ').trim()
 
