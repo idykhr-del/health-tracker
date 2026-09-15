@@ -5,8 +5,19 @@ import { jstDateKey } from '../lib/jst.js'
 /**
  * POST /api/post-to-slack
  *   認証: ?token=<SLACK_RELAY_TOKEN>
- *   body: { "text": string }
- *   → Slack Incoming Webhook へ転送
+ *   body: { "text": string, "channel"?: string }
+ *
+ *   channel 未指定 — 従来どおり SLACK_WEBHOOK_URL（Incoming Webhook = #健康 固定）へ転送し、
+ *     成功時に本文を Alexa フラッシュブリーフィング用として Redis に保存する。
+ *
+ *   channel 指定（Slack channel ID, 例 "C0C1J6JMPV3"） — 汎用 Bot 投稿パス。
+ *     SLACK_BOT_TOKEN で chat.postMessage へ投稿する。宛先をリクエスト側から指定できるので、
+ *     チャンネルが増えてもコード変更・デプロイは不要。
+ *     Redis への保存は行わない（briefing:latest を健康ブリーフィング以外で上書きしないため）。
+ *     ※ Bot が該当チャンネルに参加している必要がある。未参加の場合 Slack は
+ *       not_in_channel を返すので、事前にチャンネルで /invite しておくこと。
+ *     ※ Slack Web API は失敗時も HTTP 200 を返すため、レスポンス JSON の ok を必ず検証し、
+ *       false なら { status: 'error', slackError, channel } を返す。
  *
  * GET /api/post-to-slack
  *   認証: ?token=<SLACK_RELAY_TOKEN>
@@ -20,7 +31,8 @@ import { jstDateKey } from '../lib/jst.js'
  *
  * Env vars:
  *   SLACK_RELAY_TOKEN   — 認証トークン（GET/POST 共通）
- *   SLACK_WEBHOOK_URL   — Slack Incoming Webhook URL
+ *   SLACK_WEBHOOK_URL   — Slack Incoming Webhook URL（channel 未指定の POST と GET で使用）
+ *   SLACK_BOT_TOKEN     — Slack Bot User OAuth Token (xoxb-…)。channel 指定の POST でのみ使用
  *   NOTION_API_KEY      — Notion Integration トークン
  *   BRIEFING_PAGE_ID    — 本文を読み取る Notion ページ ID
  *   ALEXA_FEED_KEY      — フラッシュブリーフィング取得用の秘密キー
@@ -53,13 +65,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   if (!token || token !== expectedToken) return json(res, 401, { error: 'Unauthorized' })
 
   // ── 共通: Webhook URL ─────────────────────────────────────────────────────────
+  // channel 指定の POST は Bot トークンで投稿するため Webhook を必要としない。
+  // 未設定チェックは Webhook を実際に使うパス（GET と channel 未指定の POST）で行う。
   const webhookUrl = process.env['SLACK_WEBHOOK_URL']
-  if (!webhookUrl) return json(res, 500, { error: 'SLACK_WEBHOOK_URL is not configured' })
 
   // =========================================================================
   // GET: Notion ページ → Slack
   // =========================================================================
   if (req.method === 'GET') {
+    if (!webhookUrl) return json(res, 500, { error: 'SLACK_WEBHOOK_URL is not configured' })
+
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
     res.setHeader('CDN-Cache-Control', 'no-store')
     res.setHeader('Vercel-CDN-Cache-Control', 'no-store')
@@ -128,7 +143,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   // =========================================================================
-  // POST: テキストをそのまま Slack へ転送（既存実装・変更なし）
+  // POST: テキストをそのまま Slack へ転送
+  //   channel 指定あり → chat.postMessage（汎用リレー）
+  //   channel 指定なし → Incoming Webhook（従来どおり・Alexa 用に保存）
   // =========================================================================
   if (req.method === 'POST') {
     let rawBody = ''
@@ -139,11 +156,49 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     try { payload = JSON.parse(rawBody) as Record<string, unknown> }
     catch { return json(res, 400, { error: 'Invalid JSON' }) }
 
+    const channel = typeof payload['channel'] === 'string' ? payload['channel'].trim() : ''
+
+    // 従来パス（channel 未指定）は Webhook が必須。
+    let webhookTarget = ''
+    if (!channel) {
+      if (!webhookUrl) return json(res, 500, { error: 'SLACK_WEBHOOK_URL is not configured' })
+      webhookTarget = webhookUrl
+    }
+
     const text = typeof payload['text'] === 'string' ? payload['text'].trim() : ''
     if (!text) return json(res, 400, { error: '"text" is required and must be a non-empty string' })
 
+    // ── 汎用 Bot 投稿パス（channel 指定あり）────────────────────────────────
+    if (channel) {
+      const botToken = process.env['SLACK_BOT_TOKEN']
+      if (!botToken) return json(res, 500, { error: 'SLACK_BOT_TOKEN is not configured' })
+
+      try {
+        const slackRes = await fetch('https://slack.com/api/chat.postMessage', {
+          method:  'POST',
+          headers: {
+            'Authorization': `Bearer ${botToken}`,
+            'Content-Type':  'application/json; charset=utf-8',
+          },
+          body: JSON.stringify({ channel, text }),
+        })
+        // Slack Web API は失敗時も HTTP 200 を返すので、必ず ok を検証する。
+        const result = await slackRes.json() as { ok?: boolean; error?: string; ts?: string }
+        if (!result.ok) {
+          const slackError = result.error ?? `http_${slackRes.status}`
+          console.warn(`[post-to-slack] chat.postMessage failed (${channel}): ${slackError}`)
+          return json(res, 200, { status: 'error', slackError, channel })
+        }
+        // Alexa 用の briefing:latest は健康ブリーフィング専用なので、ここでは保存しない。
+        return json(res, 200, { status: 'ok', channel, ts: result.ts })
+      } catch (e) {
+        return json(res, 500, { error: 'Failed to reach Slack', detail: String(e) })
+      }
+    }
+
+    // ── 従来パス（channel 未指定・Incoming Webhook）──────────────────────────
     try {
-      const slackRes = await fetch(webhookUrl, {
+      const slackRes = await fetch(webhookTarget, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ text }),
