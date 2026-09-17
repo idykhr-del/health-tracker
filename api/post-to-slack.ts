@@ -5,10 +5,12 @@ import { jstDateKey } from '../lib/jst.js'
 /**
  * POST /api/post-to-slack
  *   認証: ?token=<SLACK_RELAY_TOKEN>
- *   body: { "text": string, "channel"?: string }
+ *   body: { "text": string, "channel"?: string, "saveFeed"?: boolean }
  *
  *   channel 未指定 — 従来どおり SLACK_WEBHOOK_URL（Incoming Webhook = #健康 固定）へ転送し、
  *     成功時に本文を Alexa フラッシュブリーフィング用として Redis に保存する。
+ *     saveFeed: false を指定するとこの保存だけをスキップする（省略時 true = 従来の挙動）。
+ *     健康ブリーフィング以外の定期投稿で briefing:latest を上書きしたくない場合に使う。
  *
  *   channel 指定（Slack channel ID, 例 "C0C1J6JMPV3"） — 汎用 Bot 投稿パス。
  *     SLACK_BOT_TOKEN で chat.postMessage へ投稿する。宛先をリクエスト側から指定できるので、
@@ -157,6 +159,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     catch { return json(res, 400, { error: 'Invalid JSON' }) }
 
     const channel = typeof payload['channel'] === 'string' ? payload['channel'].trim() : ''
+    // 省略時は true（従来どおり保存する）。boolean 以外は無視して既定に倒す。
+    const saveFeed = payload['saveFeed'] === false ? false : true
 
     // 従来パス（channel 未指定）は Webhook が必須。
     let webhookTarget = ''
@@ -206,9 +210,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       const slackBody = await slackRes.text()
       if (slackRes.ok) {
         // Alexa 用に本文を保存する。失敗しても Slack 投稿の結果は変えない。
-        try { await saveBriefing(text) }
-        catch (e) { console.warn('[post-to-slack] briefing save failed (non-fatal):', e) }
-        return json(res, 200, { status: 'ok' })
+        if (saveFeed) {
+          try { await saveBriefing(text) }
+          catch (e) { console.warn('[post-to-slack] briefing save failed (non-fatal):', e) }
+        }
+        return json(res, 200, { status: 'ok', saved: saveFeed })
       } else {
         return json(res, 200, { status: 'error', slackStatus: slackRes.status, body: slackBody })
       }
